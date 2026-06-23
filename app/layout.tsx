@@ -4,12 +4,17 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'Escala de Acompanhamento',
   description: 'Organização da escala semanal de acompanhamento hospitalar',
+  appleWebApp: {
+    title: 'Escala',
+    statusBarStyle: 'black-translucent',
+  },
 };
 
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   maximumScale: 1,
+  themeColor: '#4f46e5',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

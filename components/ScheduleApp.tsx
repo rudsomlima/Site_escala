@@ -5,6 +5,7 @@ import {
   Day,
   Entry,
   FREQUENT_NAMES,
+  Gap,
   SHIFT_LABELS,
   ShiftLabel,
   Week,
@@ -14,6 +15,7 @@ import {
   fmtBR,
   fmtMin,
   gapsForDayShift,
+  gapStops,
   isoDate,
   mondayOf,
   parseIso,
@@ -40,6 +42,31 @@ function StepperBadge({ value, onChange, color }: { value: number; onChange: (ne
       <span className="text-sm font-bold px-0.5">{fmtMin(value)}</span>
       <button type="button" onClick={() => onChange(value + 10)} className="w-6 h-6 flex items-center justify-center font-bold rounded-full active:bg-black/10">+</button>
     </span>
+  );
+}
+
+// Hour-aligned quick-pick badges (e.g. 18:00, 19:00, 20:00…) plus the +/-10min stepper
+// right below — tap a badge to jump straight to that hour, or nudge with +/- for anything
+// in between. The stepper stays visible at all times, it's just an optional refinement.
+function TimePickRow({ value, stops, color, onChange }: { value: number; stops: number[]; color: 'indigo' | 'sky'; onChange: (next: number) => void }) {
+  const idleClass = color === 'indigo' ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-sky-50 border-sky-200 text-sky-700';
+  const activeClass = color === 'indigo' ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-sky-600 border-sky-600 text-white';
+  return (
+    <div className="flex flex-col items-start gap-1.5">
+      <div className="flex flex-wrap gap-1.5">
+        {stops.map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => onChange(s)}
+            className={`text-xs font-semibold border px-2.5 py-1 rounded-full active:opacity-80 ${s === value ? activeClass : idleClass}`}
+          >
+            {fmtMin(s)}
+          </button>
+        ))}
+      </div>
+      <StepperBadge value={value} onChange={onChange} color={color} />
+    </div>
   );
 }
 
@@ -155,6 +182,16 @@ export default function ScheduleApp() {
     setEditFlow(null);
   }
 
+  // The free slot an entry's own time can move within: its gap once it's excluded from
+  // the calc (so its current span counts as available again), merged with any adjacent
+  // free time. Falls back to the entry's own current span if nothing else is free.
+  function freedGapBounds(dayIdx: number, label: ShiftLabel, entry: Entry): Gap {
+    if (!week) return { start: 0, end: 0 };
+    const gaps = gapsForDayShift(week.days, dayIdx, label, prevSundayNoite, entry.id);
+    const s = entry.start ? toMin(entry.start) : 0;
+    return gaps.find((g) => g.start <= s && s < g.end) ?? gaps[0] ?? { start: s, end: entry.end ? toMin(entry.end) : s };
+  }
+
   function removeEntry(dayIdx: number, label: ShiftLabel, entryId: string) {
     updateDay(dayIdx, (day) => {
       day.shifts[label] = day.shifts[label].filter((e) => e.id !== entryId);
@@ -166,7 +203,33 @@ export default function ScheduleApp() {
   function copyToWhatsApp() {
     if (!week) return;
     const prevSundayNoite = prevWeek?.days[6]?.shifts['Noite'];
-    navigator.clipboard.writeText(weekToWhatsApp(week, prevSundayNoite)).then(() => showToast('Copiado! Cole no WhatsApp 📲'));
+    const text = weekToWhatsApp(week, prevSundayNoite);
+
+    // Some Android browsers/webviews don't expose navigator.clipboard (needs HTTPS,
+    // or a non-WebView context) — fall back to the classic textarea+execCommand trick,
+    // which also works fine on iOS Safari.
+    const legacyCopy = () => {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        showToast('Copiado! Cole no WhatsApp 📲');
+      } catch {
+        showToast('Não foi possível copiar automaticamente');
+      }
+      document.body.removeChild(textarea);
+    };
+
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(() => showToast('Copiado! Cole no WhatsApp 📲')).catch(legacyCopy);
+    } else {
+      legacyCopy();
+    }
   }
 
   function deleteWeek() {
@@ -219,12 +282,25 @@ export default function ScheduleApp() {
             </svg>
           </button>
         </div>
-        <div className="flex items-center justify-between mt-1">
-          <button onClick={() => goWeek(-1)} className="text-indigo-100 active:text-white px-2 -ml-2 text-lg" aria-label="Semana anterior">‹</button>
-          <p className="text-indigo-100 text-sm">
-            Semana de {fmtBR(monday)} {isCurrentWeek && <span className="ml-1 bg-white/20 px-2 py-0.5 rounded-full text-[10px] align-middle">ATUAL</span>}
+        <div className="flex items-center justify-between mt-2 gap-2">
+          <button
+            onClick={() => goWeek(-1)}
+            aria-label="Semana anterior"
+            className="shrink-0 w-9 h-9 rounded-full bg-white/20 text-white text-xl font-bold flex items-center justify-center active:bg-white/35 active:scale-95 transition"
+          >
+            ‹
+          </button>
+          <p className="flex-1 text-center text-white text-sm font-medium">
+            Semana de {fmtBR(monday)}{' '}
+            {isCurrentWeek && <span className="ml-1 bg-white/25 px-2 py-0.5 rounded-full text-[10px] align-middle font-bold">ATUAL</span>}
           </p>
-          <button onClick={() => goWeek(1)} className="text-indigo-100 active:text-white px-2 -mr-2 text-lg" aria-label="Próxima semana">›</button>
+          <button
+            onClick={() => goWeek(1)}
+            aria-label="Próxima semana"
+            className="shrink-0 w-9 h-9 rounded-full bg-white/20 text-white text-xl font-bold flex items-center justify-center active:bg-white/35 active:scale-95 transition"
+          >
+            ›
+          </button>
         </div>
       </header>
 
@@ -318,31 +394,39 @@ export default function ScheduleApp() {
                                 </div>
                               )}
 
-                              {isEditingTime && (
-                                <div className="mt-2 pt-2 border-t border-slate-200 flex flex-wrap items-center gap-2">
-                                  <span className="text-[11px] text-slate-400">{editFlow.phase === 'start' ? 'início' : 'fim'}</span>
-                                  <StepperBadge
-                                    color={editFlow.phase === 'start' ? 'indigo' : 'sky'}
-                                    value={editFlow.phase === 'start' ? editFlow.start : editFlow.end}
-                                    onChange={(v) => setEditFlow({ ...editFlow, [editFlow.phase]: v })}
-                                  />
-                                  <button
-                                    type="button"
-                                    disabled={editFlow.phase === 'end' && editFlow.end <= editFlow.start}
-                                    onClick={() =>
-                                      editFlow.phase === 'start'
-                                        ? setEditFlow({ ...editFlow, phase: 'end' })
-                                        : confirmEntryTime(dayIdx, label, entry.id, editFlow.start, editFlow.end)
-                                    }
-                                    className="text-xs font-semibold bg-emerald-50 border border-emerald-200 text-emerald-700 px-2.5 py-1 rounded-full active:bg-emerald-100 disabled:opacity-40"
-                                  >
-                                    {editFlow.phase === 'start' ? 'seguir →' : 'OK ✓'}
-                                  </button>
-                                  <button type="button" onClick={() => setEditFlow(null)} className="text-[11px] text-rose-500 underline">
-                                    cancelar
-                                  </button>
-                                </div>
-                              )}
+                              {isEditingTime && (() => {
+                                const bounds = freedGapBounds(dayIdx, label, entry);
+                                const allStops = gapStops(bounds);
+                                const stops = editFlow.phase === 'start' ? allStops.slice(0, -1) : allStops.filter((s) => s > editFlow.start);
+                                return (
+                                  <div className="mt-2 pt-2 border-t border-slate-200 space-y-1.5">
+                                    <span className="text-[11px] text-slate-400">{editFlow.phase === 'start' ? 'início' : 'fim'}</span>
+                                    <div className="flex flex-wrap items-start gap-2">
+                                      <TimePickRow
+                                        color={editFlow.phase === 'start' ? 'indigo' : 'sky'}
+                                        stops={stops}
+                                        value={editFlow.phase === 'start' ? editFlow.start : editFlow.end}
+                                        onChange={(v) => setEditFlow({ ...editFlow, [editFlow.phase]: v })}
+                                      />
+                                      <button
+                                        type="button"
+                                        disabled={editFlow.phase === 'end' && editFlow.end <= editFlow.start}
+                                        onClick={() =>
+                                          editFlow.phase === 'start'
+                                            ? setEditFlow({ ...editFlow, phase: 'end' })
+                                            : confirmEntryTime(dayIdx, label, entry.id, editFlow.start, editFlow.end)
+                                        }
+                                        className="text-sm font-bold bg-emerald-600 border border-emerald-600 text-white px-4 py-2 rounded-full active:bg-emerald-700 disabled:opacity-40"
+                                      >
+                                        {editFlow.phase === 'start' ? 'seguir →' : 'OK ✓'}
+                                      </button>
+                                      <button type="button" onClick={() => setEditFlow(null)} className="text-[11px] text-rose-500 underline">
+                                        cancelar
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
                             </div>
                           );
                         })}
@@ -392,30 +476,36 @@ export default function ScheduleApp() {
                                 );
                               }
 
+                              const allStops = gapStops({ start: flow.gapStart, end: flow.gapEnd });
+                              const stops = flow.phase === 'start' ? allStops.slice(0, -1) : allStops.filter((s) => s > flow.start);
                               return (
-                                <div key={gap.start} className="flex flex-wrap items-center gap-2 bg-slate-50 rounded-lg px-2 py-1.5">
-                                  <span className="font-medium text-slate-800 text-sm">{flow.who}</span>
-                                  <span className="text-[11px] text-slate-400">{flow.phase === 'start' ? 'início' : 'fim'}</span>
-                                  <StepperBadge
-                                    color={flow.phase === 'start' ? 'indigo' : 'sky'}
-                                    value={flow.phase === 'start' ? flow.start : flow.end}
-                                    onChange={(v) => setFillFlow({ ...flow, [flow.phase]: v })}
-                                  />
-                                  <button
-                                    type="button"
-                                    disabled={flow.phase === 'end' && flow.end <= flow.start}
-                                    onClick={() =>
-                                      flow.phase === 'start'
-                                        ? setFillFlow({ ...flow, phase: 'end' })
-                                        : addGapEntry(dayIdx, label, flow.who, flow.start, flow.end)
-                                    }
-                                    className="text-xs font-semibold bg-emerald-50 border border-emerald-200 text-emerald-700 px-2.5 py-1 rounded-full active:bg-emerald-100 disabled:opacity-40"
-                                  >
-                                    {flow.phase === 'start' ? 'seguir →' : 'OK ✓'}
-                                  </button>
-                                  <button type="button" onClick={() => setFillFlow(null)} className="text-[11px] text-rose-500 underline">
-                                    cancelar
-                                  </button>
+                                <div key={gap.start} className="bg-slate-50 rounded-lg px-2 py-1.5 space-y-1.5">
+                                  <span className="font-medium text-slate-800 text-sm">
+                                    {flow.who} <span className="text-[11px] text-slate-400 font-normal">{flow.phase === 'start' ? 'início' : 'fim'}</span>
+                                  </span>
+                                  <div className="flex flex-wrap items-start gap-2">
+                                    <TimePickRow
+                                      color={flow.phase === 'start' ? 'indigo' : 'sky'}
+                                      stops={stops}
+                                      value={flow.phase === 'start' ? flow.start : flow.end}
+                                      onChange={(v) => setFillFlow({ ...flow, [flow.phase]: v })}
+                                    />
+                                    <button
+                                      type="button"
+                                      disabled={flow.phase === 'end' && flow.end <= flow.start}
+                                      onClick={() =>
+                                        flow.phase === 'start'
+                                          ? setFillFlow({ ...flow, phase: 'end' })
+                                          : addGapEntry(dayIdx, label, flow.who, flow.start, flow.end)
+                                      }
+                                      className="text-sm font-bold bg-emerald-600 border border-emerald-600 text-white px-4 py-2 rounded-full active:bg-emerald-700 disabled:opacity-40"
+                                    >
+                                      {flow.phase === 'start' ? 'seguir →' : 'OK ✓'}
+                                    </button>
+                                    <button type="button" onClick={() => setFillFlow(null)} className="text-[11px] text-rose-500 underline">
+                                      cancelar
+                                    </button>
+                                  </div>
                                 </div>
                               );
                             })}

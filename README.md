@@ -22,9 +22,17 @@ desenvolvimento — isso **não funciona em produção na Vercel** (sistema de a
 
 ## Deploy na Vercel com dados permanentes
 
+Não precisa de banco de dados — os dados continuam em um único arquivo JSON, só que
+guardado no **Vercel Blob** (armazenamento de arquivos da própria Vercel) em vez do disco
+local, que é temporário em produção.
+
 1. Suba este projeto num repositório Git e importe na Vercel (vercel.com/new).
-2. No painel do projeto na Vercel, vá em **Storage → Create Database → KV** (Vercel KV / Upstash Redis) e conecte ao projeto.
-3. A Vercel cria automaticamente as variáveis de ambiente `KV_REST_API_URL` e `KV_REST_API_TOKEN`.
-4. Faça um novo deploy (ou redeploy) — a partir daí todos os dados ficam salvos permanentemente no banco da Vercel.
+2. No painel do projeto na Vercel, vá em **Storage → Create → Blob** e conecte ao projeto.
+3. A Vercel cria automaticamente a variável de ambiente `BLOB_READ_WRITE_TOKEN`.
+4. Faça um novo deploy (ou redeploy) — a partir daí o arquivo `escala/weeks.json` fica salvo
+   permanentemente no Blob da Vercel.
 
 Sem o passo 2, o site funciona mas perde os dados a cada novo deploy/cold start.
+Se em algum momento você quiser usar Redis/KV em vez de Blob, basta criar uma KV/Upstash em
+**Storage** e conectar — o código já dá prioridade a `KV_REST_API_URL`/`KV_REST_API_TOKEN`
+quando essas variáveis existem.

@@ -26,13 +26,16 @@ just changes the key — history is implicit since old weeks are never overwritt
 key changes. The client also fetches the *previous* week (key - 7 days) purely to read its Sunday
 Noite entries for cross-week gap detection (see below).
 
-**Storage** ([lib/store.ts](lib/store.ts)): dual backend.
+**Storage** ([lib/store.ts](lib/store.ts)): three backends, checked in priority order.
 - If `KV_REST_API_URL`/`KV_REST_API_TOKEN` env vars are set, uses Upstash Redis (`@upstash/redis`,
-  `Redis.fromEnv()`) — this is what Vercel KV provisions. Required for real persistence in production.
+  `Redis.fromEnv()`) — what a Vercel KV/Upstash integration provisions. Per-key storage.
+- Else if `BLOB_READ_WRITE_TOKEN` is set, uses Vercel Blob (`@vercel/blob`) — the whole store is one
+  JSON object read/written wholesale at `escala/weeks.json` (`put`/`head`+`fetch`, `allowOverwrite: true`).
+  This is what a Vercel Blob store provisions, and is the recommended production setup (no DB needed).
 - Otherwise falls back to a local JSON file at `.data/weeks.json`. This fallback is dev-only:
-  Vercel's filesystem is ephemeral, so without the KV env vars production silently loses data on
-  every cold start/deploy. See [README.md](README.md) for the Vercel KV setup steps.
-- Same dual pattern is used for the companions/settings list (key `settings:companions`).
+  Vercel's filesystem is ephemeral, so without KV or Blob env vars production silently loses data on
+  every cold start/deploy. See [README.md](README.md) for the Vercel Blob setup steps.
+- Same three-way pattern is used for the companions/settings list (key `settings:companions`).
 
 **Schedule model & gap logic** ([lib/schedule.ts](lib/schedule.ts)) — the core domain logic, everything else is UI:
 - A `Week` is 7 `Day`s, each `Day` has 3 `ShiftLabel`s (`'Manhã' | 'Tarde' | 'Noite'`), each shift is
