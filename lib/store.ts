@@ -2,10 +2,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 
 const hasKV = !!process.env.KV_REST_API_URL && !!process.env.KV_REST_API_TOKEN;
-// @vercel/blob auto-resolves credentials from either BLOB_READ_WRITE_TOKEN (classic) or
-// VERCEL_OIDC_TOKEN + BLOB_STORE_ID (newer OIDC-based store connection) — no explicit token
-// needs to be read or passed here either way.
-const hasBlob = !!process.env.BLOB_READ_WRITE_TOKEN || !!process.env.BLOB_STORE_ID;
+const hasBlob = !!process.env.BLOB_READ_WRITE_TOKEN;
 
 const FILE = path.join(process.cwd(), '.data', 'weeks.json');
 const BLOB_PATHNAME = 'escala/weeks.json';
@@ -26,12 +23,21 @@ async function writeFileStore(obj: Record<string, any>) {
 // Blob storage holds the whole store as a single JSON object, same shape as the local
 // file fallback — there's no query/index support, so every read/write moves the full
 // document. Fine at this app's scale (a handful of weeks).
+// The store is private, so both read and write must use 'access: private' — 'public'
+// throws ("Cannot use public access on a private store").
+// Pass the token explicitly rather than letting @vercel/blob auto-detect: when both
+// BLOB_STORE_ID and a (possibly stale/dev-unsupported) VERCEL_OIDC_TOKEN are present it
+// prefers OIDC over BLOB_READ_WRITE_TOKEN, which breaks in environments where OIDC isn't
+// enabled for this store (e.g. local dev).
+const blobToken = process.env.BLOB_READ_WRITE_TOKEN;
+
 async function readBlobStore(): Promise<Record<string, any>> {
-  const { head } = await import('@vercel/blob');
+  const { get } = await import('@vercel/blob');
   try {
-    const meta = await head(BLOB_PATHNAME);
-    const res = await fetch(meta.url, { cache: 'no-store' });
-    return await res.json();
+    const result = await get(BLOB_PATHNAME, { access: 'private', useCache: false, token: blobToken });
+    if (!result) return {};
+    const text = await new Response(result.stream).text();
+    return JSON.parse(text);
   } catch {
     return {};
   }
@@ -40,10 +46,11 @@ async function readBlobStore(): Promise<Record<string, any>> {
 async function writeBlobStore(obj: Record<string, any>) {
   const { put } = await import('@vercel/blob');
   await put(BLOB_PATHNAME, JSON.stringify(obj), {
-    access: 'public',
+    access: 'private',
     contentType: 'application/json',
     addRandomSuffix: false,
     allowOverwrite: true,
+    token: blobToken,
   });
 }
 
