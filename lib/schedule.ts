@@ -6,10 +6,11 @@ export type Week = { weekStart: string; days: Day[] };
 export const SHIFT_LABELS: ShiftLabel[] = ['Manhã', 'Tarde', 'Noite'];
 export const DAY_NAMES = ['SEGUNDA', 'TERÇA', 'QUARTA', 'QUINTA', 'SEXTA', 'SÁBADO', 'DOMINGO'];
 
-// Shift windows in minutes from 00:00. Noite extends past midnight (until 08:00 next day = 32:00).
+// Shift windows in minutes from 00:00. A shift starting after 0h is Manhã, after 13h is
+// Tarde, after 18h is Noite. Noite extends past midnight (until 08:00 next day = 32:00).
 export const SHIFT_WINDOWS: Record<ShiftLabel, [number, number]> = {
-  'Manhã': [6 * 60, 12 * 60],
-  'Tarde': [12 * 60, 18 * 60],
+  'Manhã': [0, 13 * 60],
+  'Tarde': [13 * 60, 18 * 60],
   'Noite': [18 * 60, 32 * 60],
 };
 
@@ -67,8 +68,25 @@ export function fmtMin(min: number): string {
   return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
 
-function normEnd(startMin: number, endMin: number): number {
-  return endMin <= startMin ? endMin + 24 * 60 : endMin;
+const DAY_MIN = 24 * 60;
+
+// Clips a clock-time entry [s0, e0) to a shift window, trying it both as given and — for
+// windows that extend past midnight, like Noite — as if its clock times were "after
+// midnight" (+24h), whichever actually overlaps the window. This is what lets a fragment
+// like 00:00–08:00 stored as its own entry (rather than as part of one continuous
+// 20:00–08:00 entry, e.g. when filled in two separate taps that happened to land on
+// either side of midnight) still count as covering the small-hours part of an overnight
+// shift, instead of being silently dropped for not overlapping [winStart, winEnd) as-is.
+function clipToWindow(s0: number, e0: number, winStart: number, winEnd: number): [number, number] | null {
+  const aEnd = e0 <= s0 ? e0 + DAY_MIN : e0;
+  const candidates: [number, number][] = [[s0, aEnd]];
+  if (winEnd > DAY_MIN) candidates.push([s0 + DAY_MIN, aEnd + DAY_MIN]);
+  for (const [s, e] of candidates) {
+    const cs = Math.max(s, winStart);
+    const ce = Math.min(e, winEnd);
+    if (ce > cs) return [cs, ce];
+  }
+  return null;
 }
 
 export type Gap = { start: number; end: number };
@@ -79,23 +97,18 @@ export function findGaps(entries: Entry[], label: ShiftLabel, overnightFromPrev?
   const [winStart, winEnd] = SHIFT_WINDOWS[label];
   const intervals: [number, number][] = entries
     .filter((e) => e.start && e.end)
-    .map((e) => {
-      const s = toMin(e.start);
-      const en = normEnd(s, toMin(e.end));
-      return [Math.max(s, winStart), Math.min(en, winEnd)] as [number, number];
-    })
-    .filter(([s, e]) => e > s);
+    .map((e) => clipToWindow(toMin(e.start), toMin(e.end), winStart, winEnd))
+    .filter((iv): iv is [number, number] => iv !== null);
 
   if (overnightFromPrev) {
+    const [noiteStart, noiteEnd] = SHIFT_WINDOWS['Noite'];
     for (const e of overnightFromPrev) {
       if (!e.start || !e.end) continue;
-      const s = toMin(e.start);
-      const en = toMin(e.end);
-      if (en <= s) {
-        // crosses midnight, so it covers [00:00, en] of today
-        const clippedEnd = Math.min(en, winEnd);
-        if (clippedEnd > winStart) intervals.push([winStart, clippedEnd]);
-      }
+      const iv = clipToWindow(toMin(e.start), toMin(e.end), noiteStart, noiteEnd);
+      if (!iv || iv[1] <= DAY_MIN) continue;
+      // The portion of yesterday's Noite window past midnight, remapped to today's clock.
+      const clippedEnd = Math.min(iv[1] - DAY_MIN, winEnd);
+      if (clippedEnd > winStart) intervals.push([winStart, clippedEnd]);
     }
   }
 
@@ -109,6 +122,33 @@ export function findGaps(entries: Entry[], label: ShiftLabel, overnightFromPrev?
   if (cursor < winEnd) free.push({ start: cursor, end: winEnd });
 
   return free.filter((g) => g.end > g.start);
+}
+
+// Collapses entries by the same person whose times tile exactly (one's end equals the
+// next's start) into a single entry spanning the whole block — e.g. two taps that filled
+// 18:00–19:00 and 19:00–00:00 separately become one 18:00–00:00 entry for display.
+export function mergeContiguous(entries: Entry[]): Entry[] {
+  const withTime = entries.filter((e) => e.who && e.start && e.end);
+  const withoutTime = entries.filter((e) => !(e.who && e.start && e.end));
+  const consumed = new Set<string>();
+  const blocks: Entry[] = [];
+
+  for (const e of withTime) {
+    if (consumed.has(e.id)) continue;
+    const hasPred = withTime.some((o) => o.id !== e.id && o.who === e.who && o.end === e.start && !consumed.has(o.id));
+    if (hasPred) continue;
+    consumed.add(e.id);
+    let cur = e;
+    while (true) {
+      const next = withTime.find((o) => !consumed.has(o.id) && o.who === cur.who && o.start === cur.end);
+      if (!next) break;
+      consumed.add(next.id);
+      cur = next;
+    }
+    blocks.push({ ...e, end: cur.end });
+  }
+
+  return [...blocks, ...withoutTime];
 }
 
 // prevWeekSundayNoite: the previous week's Sunday Noite entries, used so Monday's Manhã
@@ -153,12 +193,15 @@ export function weekToWhatsApp(week: Week, prevWeekSundayNoite?: Entry[]): strin
     const complete = dayIsComplete(week.days, i, prevWeekSundayNoite);
     text += `*${DAY_NAMES[i]} (${fmtBR(date)})* ${complete ? '✅' : '❌'}\n`;
 
-    // Flatten the day's entries so we can detect the same person continuing
-    // seamlessly across shifts (e.g. Manhã→Tarde) and avoid repeating the boundary time.
-    const all: Entry[] = SHIFT_LABELS.flatMap((label) => day.shifts[label]);
+    // Merge contiguous same-person entries within each shift first (e.g. two taps that
+    // filled 18:00–19:00 and 19:00–00:00 separately), then flatten so we can detect the
+    // same person continuing seamlessly across shifts (e.g. Manhã→Tarde) and avoid
+    // repeating the boundary time.
+    const mergedByLabel = new Map(SHIFT_LABELS.map((label) => [label, mergeContiguous(day.shifts[label])]));
+    const all: Entry[] = SHIFT_LABELS.flatMap((label) => mergedByLabel.get(label)!);
 
     SHIFT_LABELS.forEach((label) => {
-      const entries = day.shifts[label];
+      const entries = mergedByLabel.get(label)!;
       if (entries.length === 0) {
         text += `${label}:\n`;
         return;

@@ -90,6 +90,7 @@ export default function ScheduleApp() {
   const [toast, setToast] = useState('');
   const [companions, setCompanions] = useState<string[]>(FREQUENT_NAMES);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [summaryOpen, setSummaryOpen] = useState(false);
   const [newCompanion, setNewCompanion] = useState('');
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const companionsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -200,36 +201,43 @@ export default function ScheduleApp() {
     if (editFlow?.entryId === entryId) setEditFlow(null);
   }
 
-  function copyToWhatsApp() {
-    if (!week) return;
+  function whatsAppText(): string | null {
+    if (!week) return null;
     const prevSundayNoite = prevWeek?.days[6]?.shifts['Noite'];
-    const text = weekToWhatsApp(week, prevSundayNoite);
+    return weekToWhatsApp(week, prevSundayNoite);
+  }
 
-    // Some Android browsers/webviews don't expose navigator.clipboard (needs HTTPS,
-    // or a non-WebView context) — fall back to the classic textarea+execCommand trick,
-    // which also works fine on iOS Safari.
-    const legacyCopy = () => {
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.focus();
-      textarea.select();
-      try {
-        document.execCommand('copy');
-        showToast('Copiado! Cole no WhatsApp 📲');
-      } catch {
-        showToast('Não foi possível copiar automaticamente');
-      }
-      document.body.removeChild(textarea);
-    };
-
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(() => showToast('Copiado! Cole no WhatsApp 📲')).catch(legacyCopy);
-    } else {
-      legacyCopy();
+  // Some Android browsers/webviews don't expose navigator.clipboard (needs HTTPS,
+  // or a non-WebView context) — fall back to the classic textarea+execCommand trick,
+  // which also works fine on iOS Safari.
+  function legacyCopy(text: string) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      showToast('Copiado! Cole no WhatsApp 📲');
+    } catch {
+      showToast('Não foi possível copiar automaticamente');
     }
+    document.body.removeChild(textarea);
+  }
+
+  function copyText(text: string) {
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(() => showToast('Copiado! Cole no WhatsApp 📲')).catch(() => legacyCopy(text));
+    } else {
+      legacyCopy(text);
+    }
+  }
+
+  function copyToWhatsApp() {
+    const text = whatsAppText();
+    if (text) copyText(text);
   }
 
   function deleteWeek() {
@@ -366,7 +374,7 @@ export default function ScheduleApp() {
                                           },
                                     );
                                   }}
-                                  className="text-xs text-slate-500 px-2 py-1 rounded-full bg-white border border-slate-200 active:bg-slate-100"
+                                  className="text-xs font-semibold text-sky-700 px-2 py-1 rounded-full bg-sky-50 border border-sky-200 active:bg-sky-100"
                                 >
                                   {entry.start || '--:--'} – {entry.end || '--:--'}
                                 </button>
@@ -531,6 +539,12 @@ export default function ScheduleApp() {
       </main>
 
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-3 py-3 flex gap-2 max-w-md mx-auto">
+        <button
+          onClick={() => setSummaryOpen(true)}
+          className="bg-slate-100 text-slate-700 font-semibold rounded-xl py-3 px-4 active:scale-95 transition"
+        >
+          👁️ Resumo
+        </button>
         <button onClick={copyToWhatsApp} className="flex-1 bg-emerald-600 text-white font-semibold rounded-xl py-3 active:scale-95 transition">
           📋 Copiar p/ WhatsApp
         </button>
@@ -576,6 +590,29 @@ export default function ScheduleApp() {
                 Adicionar
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {summaryOpen && (
+        <div className="fixed inset-0 bg-black/40 z-30 flex items-end justify-center" onClick={() => setSummaryOpen(false)}>
+          <div
+            className="bg-white rounded-t-2xl w-full max-w-md p-4 pb-6 max-h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3 shrink-0">
+              <h2 className="font-bold text-slate-800">👁️ Resumo da semana</h2>
+              <button onClick={() => setSummaryOpen(false)} className="text-slate-400 text-xl leading-none px-1">✕</button>
+            </div>
+            <pre className="flex-1 overflow-y-auto text-xs text-slate-700 whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded-lg p-3 font-sans">
+              {whatsAppText()}
+            </pre>
+            <button
+              onClick={copyToWhatsApp}
+              className="mt-3 shrink-0 bg-emerald-600 text-white font-semibold rounded-xl py-3 active:scale-95 transition"
+            >
+              📋 Copiar p/ WhatsApp
+            </button>
           </div>
         </div>
       )}
