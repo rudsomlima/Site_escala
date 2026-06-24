@@ -124,14 +124,18 @@ export function findGaps(entries: Entry[], label: ShiftLabel, overnightFromPrev?
   return free.filter((g) => g.end > g.start);
 }
 
+export type MergedEntry = Entry & { mergedIds: string[] };
+
 // Collapses entries by the same person whose times tile exactly (one's end equals the
 // next's start) into a single entry spanning the whole block — e.g. two taps that filled
 // 18:00–19:00 and 19:00–00:00 separately become one 18:00–00:00 entry for display.
-export function mergeContiguous(entries: Entry[]): Entry[] {
+// mergedIds lists every original entry id folded into each block, so callers that need to
+// act on the underlying data (deleting, or persisting an edit) can do so for all of them.
+export function mergeContiguous(entries: Entry[]): MergedEntry[] {
   const withTime = entries.filter((e) => e.who && e.start && e.end);
   const withoutTime = entries.filter((e) => !(e.who && e.start && e.end));
   const consumed = new Set<string>();
-  const blocks: Entry[] = [];
+  const blocks: MergedEntry[] = [];
 
   for (const e of withTime) {
     if (consumed.has(e.id)) continue;
@@ -139,30 +143,33 @@ export function mergeContiguous(entries: Entry[]): Entry[] {
     if (hasPred) continue;
     consumed.add(e.id);
     let cur = e;
+    const mergedIds = [e.id];
     while (true) {
       const next = withTime.find((o) => !consumed.has(o.id) && o.who === cur.who && o.start === cur.end);
       if (!next) break;
       consumed.add(next.id);
+      mergedIds.push(next.id);
       cur = next;
     }
-    blocks.push({ ...e, end: cur.end });
+    blocks.push({ ...e, end: cur.end, mergedIds });
   }
 
-  return [...blocks, ...withoutTime];
+  return [...blocks, ...withoutTime.map((e) => ({ ...e, mergedIds: [e.id] }))];
 }
 
 // prevWeekSundayNoite: the previous week's Sunday Noite entries, used so Monday's Manhã
 // gap calc also considers a shift that started the week before.
-// excludeEntryId: drop one entry from the calculation — used when editing that entry's own
-// time, so its current slot (merged with any adjacent gaps) shows up as available again.
+// excludeEntryIds: drop these entries from the calculation — used when editing an entry's
+// (possibly merged) own time, so its current slot (merged with any adjacent gaps) shows up
+// as available again.
 export function gapsForDayShift(
   days: Day[],
   dayIdx: number,
   label: ShiftLabel,
   prevWeekSundayNoite?: Entry[],
-  excludeEntryId?: string,
+  excludeEntryIds?: string[],
 ): Gap[] {
-  const entries = days[dayIdx].shifts[label].filter((e) => e.id !== excludeEntryId);
+  const entries = days[dayIdx].shifts[label].filter((e) => !excludeEntryIds?.includes(e.id));
   const overnightFromPrev =
     label === 'Manhã' ? (dayIdx > 0 ? days[dayIdx - 1].shifts['Noite'] : prevWeekSundayNoite) : undefined;
   return findGaps(entries, label, overnightFromPrev);

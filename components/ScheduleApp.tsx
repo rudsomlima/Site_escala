@@ -17,6 +17,7 @@ import {
   gapsForDayShift,
   gapStops,
   isoDate,
+  mergeContiguous,
   mondayOf,
   parseIso,
   toMin,
@@ -26,6 +27,27 @@ import {
 
 function newId() {
   return Math.random().toString(36).slice(2);
+}
+
+// Renders WhatsApp-style *bold* markup as actual bold text, so the preview shows what the
+// message will look like once pasted instead of the literal asterisks.
+function renderWhatsAppPreview(text: string) {
+  return text.split('\n').map((line, i) => {
+    const parts = line.split(/(\*[^*]+\*)/g).filter((p) => p !== '');
+    return (
+      <div key={i}>
+        {parts.length === 0
+          ? ' '
+          : parts.map((part, j) =>
+              part.startsWith('*') && part.endsWith('*') && part.length > 1 ? (
+                <strong key={j}>{part.slice(1, -1)}</strong>
+              ) : (
+                <span key={j}>{part}</span>
+              ),
+            )}
+      </div>
+    );
+  });
 }
 
 function todayIso() {
@@ -164,17 +186,24 @@ export default function ScheduleApp() {
     return id;
   }
 
-  function setEntryWho(dayIdx: number, label: ShiftLabel, entryId: string, who: string) {
+  // entryIds: every id folded into this displayed row by mergeContiguous — the first is
+  // kept (and updated), the rest are dropped, so a merged block collapses into one real
+  // entry as soon as it's touched instead of leaving stale contiguous fragments behind.
+  function setEntryWho(dayIdx: number, label: ShiftLabel, entryIds: string[], who: string) {
+    const [primaryId, ...rest] = entryIds;
     updateDay(dayIdx, (day) => {
-      const entry = day.shifts[label].find((e) => e.id === entryId);
+      if (rest.length) day.shifts[label] = day.shifts[label].filter((e) => !rest.includes(e.id));
+      const entry = day.shifts[label].find((e) => e.id === primaryId);
       if (entry) entry.who = who;
     });
     setWhoPicker(null);
   }
 
-  function confirmEntryTime(dayIdx: number, label: ShiftLabel, entryId: string, start: number, end: number) {
+  function confirmEntryTime(dayIdx: number, label: ShiftLabel, entryIds: string[], start: number, end: number) {
+    const [primaryId, ...rest] = entryIds;
     updateDay(dayIdx, (day) => {
-      const entry = day.shifts[label].find((e) => e.id === entryId);
+      if (rest.length) day.shifts[label] = day.shifts[label].filter((e) => !rest.includes(e.id));
+      const entry = day.shifts[label].find((e) => e.id === primaryId);
       if (entry) {
         entry.start = fmtMin(start);
         entry.end = fmtMin(end);
@@ -186,19 +215,19 @@ export default function ScheduleApp() {
   // The free slot an entry's own time can move within: its gap once it's excluded from
   // the calc (so its current span counts as available again), merged with any adjacent
   // free time. Falls back to the entry's own current span if nothing else is free.
-  function freedGapBounds(dayIdx: number, label: ShiftLabel, entry: Entry): Gap {
+  function freedGapBounds(dayIdx: number, label: ShiftLabel, entry: Entry, excludeIds: string[]): Gap {
     if (!week) return { start: 0, end: 0 };
-    const gaps = gapsForDayShift(week.days, dayIdx, label, prevSundayNoite, entry.id);
+    const gaps = gapsForDayShift(week.days, dayIdx, label, prevSundayNoite, excludeIds);
     const s = entry.start ? toMin(entry.start) : 0;
     return gaps.find((g) => g.start <= s && s < g.end) ?? gaps[0] ?? { start: s, end: entry.end ? toMin(entry.end) : s };
   }
 
-  function removeEntry(dayIdx: number, label: ShiftLabel, entryId: string) {
+  function removeEntry(dayIdx: number, label: ShiftLabel, entryIds: string[]) {
     updateDay(dayIdx, (day) => {
-      day.shifts[label] = day.shifts[label].filter((e) => e.id !== entryId);
+      day.shifts[label] = day.shifts[label].filter((e) => !entryIds.includes(e.id));
     });
-    if (whoPicker?.entryId === entryId) setWhoPicker(null);
-    if (editFlow?.entryId === entryId) setEditFlow(null);
+    if (whoPicker && entryIds.includes(whoPicker.entryId)) setWhoPicker(null);
+    if (editFlow && entryIds.includes(editFlow.entryId)) setEditFlow(null);
   }
 
   function whatsAppText(): string | null {
@@ -335,7 +364,7 @@ export default function ScheduleApp() {
 
                 <div className="px-4 pb-4 space-y-4 border-t border-slate-100 pt-3">
                   {SHIFT_LABELS.map((label) => {
-                    const entries = day.shifts[label];
+                    const entries = mergeContiguous(day.shifts[label]);
                     const gaps = gapsForDayShift(week.days, dayIdx, label, prevSundayNoite);
                     return (
                       <div key={label} className="space-y-1.5">
@@ -379,7 +408,7 @@ export default function ScheduleApp() {
                                   {entry.start || '--:--'} – {entry.end || '--:--'}
                                 </button>
                                 <button
-                                  onClick={() => removeEntry(dayIdx, label, entry.id)}
+                                  onClick={() => removeEntry(dayIdx, label, entry.mergedIds)}
                                   aria-label="Excluir"
                                   className="text-slate-400 active:text-rose-500 text-lg leading-none w-9 h-9 flex items-center justify-center shrink-0"
                                 >
@@ -393,7 +422,7 @@ export default function ScheduleApp() {
                                   {companions.map((n) => (
                                     <button
                                       key={n}
-                                      onClick={() => setEntryWho(dayIdx, label, entry.id, n)}
+                                      onClick={() => setEntryWho(dayIdx, label, entry.mergedIds, n)}
                                       className="text-xs bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-full active:bg-indigo-200"
                                     >
                                       {n}
@@ -403,7 +432,7 @@ export default function ScheduleApp() {
                               )}
 
                               {isEditingTime && (() => {
-                                const bounds = freedGapBounds(dayIdx, label, entry);
+                                const bounds = freedGapBounds(dayIdx, label, entry, entry.mergedIds);
                                 const allStops = gapStops(bounds);
                                 const stops = editFlow.phase === 'start' ? allStops.slice(0, -1) : allStops.filter((s) => s > editFlow.start);
                                 return (
@@ -422,7 +451,7 @@ export default function ScheduleApp() {
                                         onClick={() =>
                                           editFlow.phase === 'start'
                                             ? setEditFlow({ ...editFlow, phase: 'end' })
-                                            : confirmEntryTime(dayIdx, label, entry.id, editFlow.start, editFlow.end)
+                                            : confirmEntryTime(dayIdx, label, entry.mergedIds, editFlow.start, editFlow.end)
                                         }
                                         className="text-sm font-bold bg-emerald-600 border border-emerald-600 text-white px-4 py-2 rounded-full active:bg-emerald-700 disabled:opacity-40"
                                       >
@@ -604,9 +633,9 @@ export default function ScheduleApp() {
               <h2 className="font-bold text-slate-800">👁️ Resumo da semana</h2>
               <button onClick={() => setSummaryOpen(false)} className="text-slate-400 text-xl leading-none px-1">✕</button>
             </div>
-            <pre className="flex-1 overflow-y-auto text-xs text-slate-700 whitespace-pre-wrap bg-slate-50 border border-slate-200 rounded-lg p-3 font-sans">
-              {whatsAppText()}
-            </pre>
+            <div className="flex-1 overflow-y-auto text-base leading-relaxed text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3">
+              {renderWhatsAppPreview(whatsAppText() ?? '')}
+            </div>
             <button
               onClick={copyToWhatsApp}
               className="mt-3 shrink-0 bg-emerald-600 text-white font-semibold rounded-xl py-3 active:scale-95 transition"
