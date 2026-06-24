@@ -54,15 +54,63 @@ function todayIso() {
   return isoDate(new Date());
 }
 
+const HOLD_ACCELERATE_AFTER_MS = 2000;
+const HOLD_NORMAL_INTERVAL_MS = 350;
+const HOLD_FAST_INTERVAL_MS = 80;
+
+// A +/- button that repeats while held — tapping steps once, holding repeats at a normal
+// pace, and after 2s of holding it speeds up, so crossing several hours of 10min steps
+// doesn't take dozens of individual taps.
+function HoldStepButton({ onStep, children, className }: { onStep: () => void; children: React.ReactNode; className: string }) {
+  const onStepRef = useRef(onStep);
+  onStepRef.current = onStep;
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const repeatTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const stop = () => {
+    if (holdTimer.current) clearTimeout(holdTimer.current);
+    if (repeatTimer.current) clearInterval(repeatTimer.current);
+    holdTimer.current = null;
+    repeatTimer.current = null;
+  };
+
+  useEffect(() => stop, []);
+
+  const start = () => {
+    onStepRef.current();
+    repeatTimer.current = setInterval(() => onStepRef.current(), HOLD_NORMAL_INTERVAL_MS);
+    holdTimer.current = setTimeout(() => {
+      if (repeatTimer.current) clearInterval(repeatTimer.current);
+      repeatTimer.current = setInterval(() => onStepRef.current(), HOLD_FAST_INTERVAL_MS);
+    }, HOLD_ACCELERATE_AFTER_MS);
+  };
+
+  return (
+    <button
+      type="button"
+      onPointerDown={start}
+      onPointerUp={stop}
+      onPointerLeave={stop}
+      onPointerCancel={stop}
+      className={className}
+    >
+      {children}
+    </button>
+  );
+}
+
 // +/- 10min stepper badge: keeps the chosen time visible at all times while it's
 // adjusted, instead of hiding the adjustment behind a separate "fine tune" step.
 function StepperBadge({ value, onChange, color }: { value: number; onChange: (next: number) => void; color: 'indigo' | 'sky' }) {
   const colorClass = color === 'indigo' ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-sky-50 border-sky-200 text-sky-700';
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const btnClass = 'w-6 h-6 flex items-center justify-center font-bold rounded-full active:bg-black/10';
   return (
     <span className={`inline-flex items-center gap-1.5 border rounded-full pl-1 pr-1.5 py-1 ${colorClass}`}>
-      <button type="button" onClick={() => onChange(value - 10)} className="w-6 h-6 flex items-center justify-center font-bold rounded-full active:bg-black/10">−</button>
+      <HoldStepButton onStep={() => onChange(valueRef.current - 10)} className={btnClass}>−</HoldStepButton>
       <span className="text-sm font-bold px-0.5">{fmtMin(value)}</span>
-      <button type="button" onClick={() => onChange(value + 10)} className="w-6 h-6 flex items-center justify-center font-bold rounded-full active:bg-black/10">+</button>
+      <HoldStepButton onStep={() => onChange(valueRef.current + 10)} className={btnClass}>+</HoldStepButton>
     </span>
   );
 }
@@ -450,7 +498,7 @@ export default function ScheduleApp() {
                                         disabled={editFlow.phase === 'end' && editFlow.end <= editFlow.start}
                                         onClick={() =>
                                           editFlow.phase === 'start'
-                                            ? setEditFlow({ ...editFlow, phase: 'end' })
+                                            ? setEditFlow({ ...editFlow, phase: 'end', end: editFlow.start })
                                             : confirmEntryTime(dayIdx, label, entry.mergedIds, editFlow.start, editFlow.end)
                                         }
                                         className="text-sm font-bold bg-emerald-600 border border-emerald-600 text-white px-4 py-2 rounded-full active:bg-emerald-700 disabled:opacity-40"
@@ -532,7 +580,7 @@ export default function ScheduleApp() {
                                       disabled={flow.phase === 'end' && flow.end <= flow.start}
                                       onClick={() =>
                                         flow.phase === 'start'
-                                          ? setFillFlow({ ...flow, phase: 'end' })
+                                          ? setFillFlow({ ...flow, phase: 'end', end: flow.start })
                                           : addGapEntry(dayIdx, label, flow.who, flow.start, flow.end)
                                       }
                                       className="text-sm font-bold bg-emerald-600 border border-emerald-600 text-white px-4 py-2 rounded-full active:bg-emerald-700 disabled:opacity-40"
