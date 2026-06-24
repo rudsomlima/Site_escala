@@ -10,6 +10,7 @@ import {
   ShiftLabel,
   Week,
   addDays,
+  applySpillover,
   dayIsComplete,
   emptyWeek,
   fmtBR,
@@ -105,11 +106,11 @@ function StepperBadge({ value, onChange, color }: { value: number; onChange: (ne
   const colorClass = color === 'indigo' ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-sky-50 border-sky-200 text-sky-700';
   const valueRef = useRef(value);
   valueRef.current = value;
-  const btnClass = 'w-6 h-6 flex items-center justify-center font-bold rounded-full active:bg-black/10';
+  const btnClass = 'w-9 h-9 flex items-center justify-center text-lg font-bold rounded-full active:bg-black/10 shrink-0';
   return (
-    <span className={`inline-flex items-center gap-1.5 border rounded-full pl-1 pr-1.5 py-1 ${colorClass}`}>
+    <span className={`inline-flex items-center gap-3 border rounded-full px-3 py-1 ${colorClass}`}>
       <HoldStepButton onStep={() => onChange(valueRef.current - 10)} className={btnClass}>−</HoldStepButton>
-      <span className="text-sm font-bold px-0.5">{fmtMin(value)}</span>
+      <span className="text-sm font-bold px-1 min-w-[3.5em] text-center">{fmtMin(value)}</span>
       <HoldStepButton onStep={() => onChange(valueRef.current + 10)} className={btnClass}>+</HoldStepButton>
     </span>
   );
@@ -229,6 +230,7 @@ export default function ScheduleApp() {
     const id = newId();
     updateDay(dayIdx, (day) => {
       day.shifts[label].push({ id, who, start: fmtMin(start), end: fmtMin(end) });
+      applySpillover(day, id, label, who, start, end);
     });
     setFillFlow(null);
     return id;
@@ -242,7 +244,10 @@ export default function ScheduleApp() {
     updateDay(dayIdx, (day) => {
       if (rest.length) day.shifts[label] = day.shifts[label].filter((e) => !rest.includes(e.id));
       const entry = day.shifts[label].find((e) => e.id === primaryId);
-      if (entry) entry.who = who;
+      if (entry) {
+        entry.who = who;
+        applySpillover(day, primaryId, label, who, entry.start ? toMin(entry.start) : 0, entry.end ? toMin(entry.end) : 0);
+      }
     });
     setWhoPicker(null);
   }
@@ -255,6 +260,7 @@ export default function ScheduleApp() {
       if (entry) {
         entry.start = fmtMin(start);
         entry.end = fmtMin(end);
+        applySpillover(day, primaryId, label, entry.who, start, end);
       }
     });
     setEditFlow(null);
@@ -273,6 +279,9 @@ export default function ScheduleApp() {
   function removeEntry(dayIdx: number, label: ShiftLabel, entryIds: string[]) {
     updateDay(dayIdx, (day) => {
       day.shifts[label] = day.shifts[label].filter((e) => !entryIds.includes(e.id));
+      for (const otherLabel of SHIFT_LABELS) {
+        day.shifts[otherLabel] = day.shifts[otherLabel].filter((e) => !e.spilloverOf || !entryIds.includes(e.spilloverOf));
+      }
     });
     if (whoPicker && entryIds.includes(whoPicker.entryId)) setWhoPicker(null);
     if (editFlow && entryIds.includes(editFlow.entryId)) setEditFlow(null);

@@ -1,4 +1,7 @@
-export type Entry = { id: string; who: string; start: string; end: string };
+// spilloverOf: set on entries auto-created by applySpillover — marks this entry as the
+// portion of another shift's entry that spilled into this shift's window, so it can be
+// recomputed (replaced) instead of duplicated whenever the source entry changes.
+export type Entry = { id: string; who: string; start: string; end: string; spilloverOf?: string };
 export type ShiftLabel = 'Manhã' | 'Tarde' | 'Noite';
 export type Day = { shifts: Record<ShiftLabel, Entry[]> };
 export type Week = { weekStart: string; days: Day[] };
@@ -154,7 +157,41 @@ export function mergeContiguous(entries: Entry[]): MergedEntry[] {
     blocks.push({ ...e, end: cur.end, mergedIds });
   }
 
+  blocks.sort((a, b) => toMin(a.start) - toMin(b.start));
   return [...blocks, ...withoutTime.map((e) => ({ ...e, mergedIds: [e.id] }))];
+}
+
+// When an entry's time extends past its own shift's window into another shift on the same
+// day (e.g. a Manhã entry edited to end at 20:00 also covers all of Tarde and the early
+// part of Noite), the other shift(s) need their own entry for that person too, or they'll
+// keep showing as "falta cobrir" despite being covered. This both creates that coverage and
+// keeps it in sync: it first removes any entries this same source previously spilled into
+// other shifts (spilloverOf === originId), then re-adds fresh ones for the current range —
+// so shrinking the source's time removes coverage it no longer implies, and growing it adds
+// more, without ever duplicating across repeated edits of the same entry.
+// Only covers spillover within the same calendar day — a Noite entry crossing into the next
+// day's Manhã is handled separately by the existing overnightFromPrev gap logic.
+export function applySpillover(day: Day, originId: string, originLabel: ShiftLabel, who: string, startMin: number, endMin: number): void {
+  for (const label of SHIFT_LABELS) {
+    day.shifts[label] = day.shifts[label].filter((e) => e.spilloverOf !== originId);
+  }
+  if (!who) return;
+  const normEnd = endMin <= startMin ? endMin + DAY_MIN : endMin;
+  for (const label of SHIFT_LABELS) {
+    if (label === originLabel) continue;
+    const [winStart, winEnd] = SHIFT_WINDOWS[label];
+    const overlapStart = Math.max(startMin, winStart);
+    const overlapEnd = Math.min(normEnd, winEnd);
+    if (overlapEnd > overlapStart) {
+      day.shifts[label].push({
+        id: `${originId}-spill-${label}`,
+        who,
+        start: fmtMin(overlapStart),
+        end: fmtMin(overlapEnd),
+        spilloverOf: originId,
+      });
+    }
+  }
 }
 
 // prevWeekSundayNoite: the previous week's Sunday Noite entries, used so Monday's Manhã
