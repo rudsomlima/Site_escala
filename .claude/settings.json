@@ -4,7 +4,9 @@
       "Bash(npm run *)",
       "Bash(nohup npx next dev -p 3101)",
       "Bash(disown)",
-      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://127.0.0.1:3101/ --max-time 10)"
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://127.0.0.1:3101/ --max-time 10)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://127.0.0.1:3100/ --max-time 8)",
+      "Bash(npx tsc *)"
     ]
   }
 }

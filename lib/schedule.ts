@@ -199,6 +199,26 @@ export function applySpillover(day: Day, originId: string, originLabel: ShiftLab
   }
 }
 
+// Renames every entry across the whole week whose `who` matches `oldName` (any shift, any
+// day, including spillover rows) to `newName`. Pure — returns a new Week plus whether
+// anything actually changed, so callers (the rename API route, iterating every saved week)
+// can skip writing back weeks that don't mention this person at all.
+export function renameWho(week: Week, oldName: string, newName: string): { week: Week; changed: boolean } {
+  let changed = false;
+  const next: Week = JSON.parse(JSON.stringify(week));
+  for (const day of next.days) {
+    for (const label of SHIFT_LABELS) {
+      for (const entry of day.shifts[label]) {
+        if (entry.who === oldName) {
+          entry.who = newName;
+          changed = true;
+        }
+      }
+    }
+  }
+  return { week: next, changed };
+}
+
 export type PaymentBlock = { dayIdx: number; date: string; start: string; end: string; hours: number; amount: number };
 export type PaymentSummary = { who: string; hours: number; shifts: number; amount: number; blocks: PaymentBlock[] };
 
@@ -266,12 +286,14 @@ export function gapsForDayShift(
   const entries = SHIFT_LABELS.flatMap((l) => day.shifts[l]).filter(
     (e) => !e.spilloverOf && !excludeEntryIds?.includes(e.id),
   );
+  // Unlike the same-day gather above, spillover entries are NOT excluded here: a duty that
+  // started in yesterday's Manhã/Tarde and ran past midnight (e.g. 08:00 one day to 08:00
+  // the next) has its real data on the origin entry, which lives in *yesterday's* Manhã/Tarde
+  // array — yesterday's Noite array only ever has the derived spillover copy of it. Excluding
+  // that copy here would silently drop the overnight credit entirely (the origin itself isn't
+  // examined, since it belongs to a different day than the one being computed).
   const overnightFromPrev =
-    label === 'Manhã'
-      ? dayIdx > 0
-        ? days[dayIdx - 1].shifts['Noite'].filter((e) => !e.spilloverOf)
-        : prevWeekSundayNoite
-      : undefined;
+    label === 'Manhã' ? (dayIdx > 0 ? days[dayIdx - 1].shifts['Noite'] : prevWeekSundayNoite) : undefined;
   return findGaps(entries, label, overnightFromPrev);
 }
 
@@ -300,34 +322,40 @@ export function weekToWhatsApp(week: Week, prevWeekSundayNoite?: Entry[]): strin
     const complete = dayIsComplete(week.days, i, prevWeekSundayNoite);
     text += `*${DAY_NAMES[i]} (${fmtBR(date)})* ${complete ? '✅' : '❌'}\n`;
 
-    // Merge contiguous same-person entries within each shift first (e.g. two taps that
-    // filled 18:00–19:00 and 19:00–00:00 separately), then flatten so we can detect the
-    // same person continuing seamlessly across shifts (e.g. Manhã→Tarde) and avoid
-    // repeating the boundary time.
-    const mergedByLabel = new Map(SHIFT_LABELS.map((label) => [label, mergeContiguous(day.shifts[label])]));
-    const all: Entry[] = SHIFT_LABELS.flatMap((label) => mergedByLabel.get(label)!);
+    // A person whose duty runs across shift boundaries (via applySpillover, or just two
+    // separately-created entries that happen to tile exactly) should appear once, in the
+    // shift their duty *starts* in — not repeated in every shift it merely passes through.
+    // mergeContiguous is run across the whole day's entries at once (not per shift) so any
+    // such run becomes a single block with its full start–end range; spillover rows are
+    // excluded since they're just a visual echo of time already on the origin entry, and
+    // would otherwise create a separate, spurious "starts here" block of their own.
+    const dayEntries: Entry[] = [];
+    const originLabelOf = new Map<string, ShiftLabel>();
+    for (const label of SHIFT_LABELS) {
+      for (const e of day.shifts[label]) {
+        if (e.spilloverOf) continue;
+        dayEntries.push(e);
+        originLabelOf.set(e.id, label);
+      }
+    }
+    const blocks = mergeContiguous(dayEntries).filter((b) => b.who && b.start && b.end);
+    const blocksByLabel = new Map<ShiftLabel, MergedEntry[]>(SHIFT_LABELS.map((l) => [l, []]));
+    for (const block of blocks) {
+      // mergedIds[0] is the chain's earliest entry — whichever shift array it actually lives
+      // in is where this person's duty starts, regardless of which window their clock time
+      // falls into (relevant for an overnight fragment stored as e.g. "00:00" in Noite).
+      const label = originLabelOf.get(block.mergedIds[0]) ?? 'Manhã';
+      blocksByLabel.get(label)!.push(block);
+    }
 
     SHIFT_LABELS.forEach((label) => {
-      const entries = mergedByLabel.get(label)!;
-      if (entries.length === 0) {
+      const blocksHere = blocksByLabel.get(label)!;
+      if (blocksHere.length === 0) {
         text += `${label}:\n`;
         return;
       }
-      entries.forEach((e) => {
-        if (!e.who) {
-          text += `${label}:\n`;
-          return;
-        }
-        let time = '';
-        if (e.start && e.end) {
-          const continuesFromPrev = all.some((o) => o.id !== e.id && o.who === e.who && o.end === e.start);
-          const continuesToNext = all.some((o) => o.id !== e.id && o.who === e.who && o.start === e.end);
-          if (continuesFromPrev && !continuesToNext) time = ` até às ${e.end}`;
-          else if (continuesToNext && !continuesFromPrev) time = ` às ${e.start}`;
-          else if (!continuesFromPrev && !continuesToNext) time = ` ${e.start} às ${e.end}`;
-        }
-        text += `${label}: *${e.who}*${time}\n`;
-      });
+      const parts = blocksHere.map((b) => `*${b.who}* ${b.start} às ${b.end}`);
+      text += `${label}: ${parts.join(', ')}\n`;
     });
     text += '\n';
   });

@@ -58,15 +58,6 @@ function todayIso() {
   return isoDate(new Date());
 }
 
-// Standard Android/Material "settings" gear glyph.
-function GearIcon({ className }: { className?: string }) {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" className={className}>
-      <path d="M19.14,12.94c0.04,-0.3,0.06,-0.61,0.06,-0.94c0,-0.32,-0.02,-0.64,-0.07,-0.94l2.03,-1.58c0.18,-0.14,0.23,-0.41,0.12,-0.61l-1.92,-3.32c-0.12,-0.22,-0.37,-0.29,-0.59,-0.22l-2.39,0.96c-0.5,-0.38,-1.03,-0.7,-1.62,-0.94L14.4,2.81c-0.04,-0.24,-0.24,-0.41,-0.48,-0.41h-3.84c-0.24,0,-0.43,0.17,-0.47,0.41L9.25,5.35c-0.59,0.24,-1.13,0.57,-1.62,0.94l-2.39,-0.96c-0.22,-0.08,-0.47,0,-0.59,0.22L2.74,8.87c-0.12,0.21,-0.08,0.47,0.12,0.61l2.03,1.58c-0.05,0.3,-0.09,0.63,-0.09,0.94s0.02,0.64,0.07,0.94l-2.03,1.58c-0.18,0.14,-0.23,0.41,-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39,-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44,-0.17,0.47,-0.41l0.36,-2.54c0.59,-0.24,1.13,-0.56,1.62,-0.94l2.39,0.96c0.22,0.08,0.47,0,0.59,-0.22l1.92,-3.32c0.12,-0.22,0.07,-0.47,-0.12,-0.61L19.14,12.94z M12,15.6c-1.98,0,-3.6,-1.62,-3.6,-3.6s1.62,-3.6,3.6,-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z" />
-    </svg>
-  );
-}
-
 // Hands at a clean vertical line (12 o'clock-ish) for "hora fechada" (whole-hour only) vs
 // hands splayed at an angle for "hora fracionada" (free 10min increments allowed) — meant
 // to read at a glance which time-picking mode is active.
@@ -203,16 +194,18 @@ export default function ScheduleApp() {
   const [coverPrevFlow, setCoverPrevFlow] = useState<{ gapEnd: number } | null>(null);
   const [toast, setToast] = useState('');
   const [companions, setCompanions] = useState<string[]>(FREQUENT_NAMES);
-  const [settingsHubOpen, setSettingsHubOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paymentsOpen, setPaymentsOpen] = useState(false);
   const [shiftRate, setShiftRate] = useState(DEFAULT_SHIFT_RATE);
   const [selectedPayNames, setSelectedPayNames] = useState<Set<string>>(new Set());
-  const [expandedPayName, setExpandedPayName] = useState<string | null>(null);
+  const [expandedPayNames, setExpandedPayNames] = useState<Set<string>>(new Set());
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [summaryEditing, setSummaryEditing] = useState(false);
   const [summaryDraft, setSummaryDraft] = useState('');
   const [newCompanion, setNewCompanion] = useState('');
+  const [editingCompanion, setEditingCompanion] = useState<{ name: string; draft: string } | null>(null);
+  const [companionsEditMode, setCompanionsEditMode] = useState(false);
+  const [companionsDeleteMode, setCompanionsDeleteMode] = useState(false);
   const [exactHoursOnly, setExactHoursOnly] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const companionsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -239,7 +232,7 @@ export default function ScheduleApp() {
       });
   }, []);
 
-  useEffect(() => {
+  function loadWeeks() {
     setLoading(true);
     fetch(`/api/weeks/${weekKey}`)
       .then((r) => r.json())
@@ -251,7 +244,9 @@ export default function ScheduleApp() {
       .then((r) => r.json())
       .then((w: Week) => setPrevWeek(w))
       .catch(() => setPrevWeek(null));
-  }, [weekKey]);
+  }
+
+  useEffect(loadWeeks, [weekKey]);
 
   // onSaved: runs only once this week's PUT actually resolves — used to chain a write to a
   // different store key (e.g. the global settings) strictly after this one, since the
@@ -459,6 +454,31 @@ export default function ScheduleApp() {
     saveCompanions(companions.filter((n) => n !== name));
   }
 
+  // Unlike add/remove (which only touch the suggestions list), renaming also rewrites every
+  // entry that already used the old name across every saved week (see
+  // app/api/settings/rename/route.ts) — so the currently loaded week(s) need a refetch
+  // afterward to pick up entries that were renamed server-side.
+  function renameCompanion(oldName: string, newName: string) {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === oldName) {
+      setEditingCompanion(null);
+      return;
+    }
+    fetch('/api/settings/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldName, newName: trimmed }),
+    })
+      .then((r) => r.json())
+      .then(() => {
+        setCompanions((prev) => Array.from(new Set(prev.map((n) => (n === oldName ? trimmed : n)))));
+        loadWeeks();
+        showToast('Nome atualizado ✓');
+      })
+      .catch(() => showToast('Erro ao renomear — verifique a conexão'));
+    setEditingCompanion(null);
+  }
+
   // Names actually scheduled this week (own entries only, not visual spillover rows) —
   // falls back to the suggested companions list if the week is still empty.
   function namesWorkingThisWeek(): string[] {
@@ -476,8 +496,7 @@ export default function ScheduleApp() {
 
   function openPayments() {
     setSelectedPayNames(new Set());
-    setExpandedPayName(null);
-    setSettingsHubOpen(false);
+    setExpandedPayNames(new Set());
     setPaymentsOpen(true);
   }
 
@@ -488,6 +507,14 @@ export default function ScheduleApp() {
       else next.add(name);
       return next;
     });
+  }
+
+  function toggleAllPayNames(names: string[]) {
+    setSelectedPayNames((prev) => (names.every((n) => prev.has(n)) ? new Set() : new Set(names)));
+  }
+
+  function toggleExpandAllPay(names: string[]) {
+    setExpandedPayNames((prev) => (names.every((n) => prev.has(n)) ? new Set() : new Set(names)));
   }
 
   // The current week's own pinned rate, if it has one, otherwise the live global default —
@@ -533,6 +560,30 @@ export default function ScheduleApp() {
       }
     }
     return Array.from(stops).sort((a, b) => a - b);
+  }
+
+  // One combined "falta cobrir" list for the whole day instead of three separate ones per
+  // shift — adjacent gaps from different shifts (one's end touching the next's start, e.g.
+  // Tarde's gap ending at 18:00 and Noite's starting at 18:00) are merged into a single
+  // range. Each merged range keeps the *earliest* shift it came from as its origin — that's
+  // the shift the resulting entry gets saved under; addGapEntry's applySpillover call
+  // already takes care of distributing it into whichever later shift(s) it actually spans.
+  function dayCombinedGaps(dayIdx: number): { gap: Gap; shift: ShiftLabel }[] {
+    if (!week) return [];
+    const tagged: { gap: Gap; shift: ShiftLabel }[] = [];
+    for (const label of SHIFT_LABELS) {
+      for (const g of gapsForDayShift(week.days, dayIdx, label, prevSundayNoite)) {
+        tagged.push({ gap: { ...g }, shift: label });
+      }
+    }
+    tagged.sort((a, b) => a.gap.start - b.gap.start);
+    const merged: { gap: Gap; shift: ShiftLabel }[] = [];
+    for (const t of tagged) {
+      const last = merged[merged.length - 1];
+      if (last && last.gap.end === t.gap.start) last.gap.end = t.gap.end;
+      else merged.push(t);
+    }
+    return merged;
   }
 
   const effectiveShiftRate = week?.shiftRate ?? shiftRate;
@@ -587,9 +638,137 @@ export default function ScheduleApp() {
                 </summary>
 
                 <div className="px-4 pb-4 space-y-4 border-t border-slate-100 pt-3">
+                  {(() => {
+                    const combinedGaps = dayCombinedGaps(dayIdx);
+                    if (combinedGaps.length === 0) return null;
+                    return (
+                      <div className="space-y-2">
+                        <p className="text-xs text-amber-600 font-medium">
+                          ⚠️ Falta cobrir {combinedGaps.map(({ gap }) => `${fmtMin(gap.start)}–${fmtMin(gap.end)}`).join(', ')}
+                        </p>
+                        {combinedGaps.map(({ gap, shift: label }) => {
+                          const flow =
+                            fillFlow && fillFlow.day === dayIdx && fillFlow.shift === label && fillFlow.gapStart === gap.start ? fillFlow : null;
+
+                          if (!flow) {
+                            return (
+                              <button
+                                key={gap.start}
+                                type="button"
+                                onClick={() =>
+                                  setFillFlow({ day: dayIdx, shift: label, gapStart: gap.start, gapEnd: gap.end, phase: 'who', who: '', start: gap.start, end: gap.end })
+                                }
+                                className="text-xs font-semibold bg-amber-50 border border-amber-200 text-amber-700 px-2.5 py-1 rounded-full active:bg-amber-100"
+                              >
+                                Cobrir {fmtMin(gap.start)}–{fmtMin(gap.end)}
+                              </button>
+                            );
+                          }
+
+                          if (flow.phase === 'who') {
+                            return (
+                              <div key={gap.start} className="flex flex-wrap gap-1.5">
+                                <span className="text-[11px] text-slate-400 w-full">Quem vai cobrir {fmtMin(gap.start)}–{fmtMin(gap.end)}?</span>
+                                {companions.map((n) => (
+                                  <button
+                                    key={n}
+                                    type="button"
+                                    onClick={() => setFillFlow({ ...flow, who: n, phase: 'start' })}
+                                    className="text-xs bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-full active:bg-indigo-200"
+                                  >
+                                    {n}
+                                  </button>
+                                ))}
+                                <button type="button" onClick={() => setFillFlow(null)} className="text-[11px] text-rose-500 underline ml-1">
+                                  cancelar
+                                </button>
+                              </div>
+                            );
+                          }
+
+                          const allStops = exactHoursOnly ? dayWideStops(dayIdx) : gapStops({ start: flow.gapStart, end: flow.gapEnd });
+                          const stops = flow.phase === 'start' ? allStops.slice(0, -1) : allStops.filter((s) => s > flow.start);
+                          const pick = (picked: number) =>
+                            flow.phase === 'start'
+                              ? setFillFlow({ ...flow, phase: 'end', start: picked, end: picked })
+                              : addGapEntry(dayIdx, label, flow.who, flow.start, picked);
+                          return (
+                            <div key={gap.start} className="bg-slate-50 rounded-lg px-2 py-1.5 space-y-1.5">
+                              <span className="font-medium text-slate-800 text-sm">
+                                {flow.who} <span className="text-[11px] text-slate-400 font-normal">{flow.phase === 'start' ? 'início' : 'fim'}</span>
+                              </span>
+                              <div className="flex flex-wrap items-start gap-2">
+                                <TimePickRow
+                                  color={flow.phase === 'start' ? 'indigo' : 'sky'}
+                                  stops={stops}
+                                  value={flow.phase === 'start' ? flow.start : flow.end}
+                                  onChange={(v) => setFillFlow({ ...flow, [flow.phase]: v })}
+                                  onPick={pick}
+                                  exactHoursOnly={exactHoursOnly}
+                                />
+                                {!exactHoursOnly && (
+                                  <button
+                                    type="button"
+                                    disabled={flow.phase === 'end' && flow.end <= flow.start}
+                                    onClick={() =>
+                                      flow.phase === 'start'
+                                        ? setFillFlow({ ...flow, phase: 'end', end: flow.start })
+                                        : addGapEntry(dayIdx, label, flow.who, flow.start, flow.end)
+                                    }
+                                    className="text-sm font-bold bg-emerald-600 border border-emerald-600 text-white px-4 py-2 rounded-full active:bg-emerald-700 disabled:opacity-40"
+                                  >
+                                    {flow.phase === 'start' ? 'seguir →' : 'OK ✓'}
+                                  </button>
+                                )}
+                                <button type="button" onClick={() => setFillFlow(null)} className="text-[11px] text-rose-500 underline">
+                                  cancelar
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+
+                        {dayIdx === 0 &&
+                          !prevSundayNoite?.length &&
+                          (() => {
+                            const openGap = gapsForDayShift(week.days, dayIdx, 'Manhã', prevSundayNoite).find((g) => g.start === 0);
+                            if (!openGap) return null;
+                            if (coverPrevFlow) {
+                              return (
+                                <div className="flex flex-wrap gap-1.5">
+                                  <span className="text-[11px] text-slate-400 w-full">Quem já cobria desde domingo (semana anterior)?</span>
+                                  {companions.map((n) => (
+                                    <button
+                                      key={n}
+                                      type="button"
+                                      onClick={() => coverFromPrevWeek(n, coverPrevFlow.gapEnd)}
+                                      className="text-xs bg-violet-50 text-violet-700 px-2.5 py-1 rounded-full active:bg-violet-200"
+                                    >
+                                      {n}
+                                    </button>
+                                  ))}
+                                  <button type="button" onClick={() => setCoverPrevFlow(null)} className="text-[11px] text-rose-500 underline ml-1">
+                                    cancelar
+                                  </button>
+                                </div>
+                              );
+                            }
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => setCoverPrevFlow({ gapEnd: openGap.end })}
+                                className="text-xs font-semibold bg-violet-50 border border-violet-200 text-violet-700 px-2.5 py-1 rounded-full active:bg-violet-100"
+                              >
+                                🌙 Já coberto desde domingo
+                              </button>
+                            );
+                          })()}
+                      </div>
+                    );
+                  })()}
+
                   {SHIFT_LABELS.map((label) => {
                     const entries = mergeContiguous(day.shifts[label]);
-                    const gaps = gapsForDayShift(week.days, dayIdx, label, prevSundayNoite);
                     return (
                       <div key={label} className="space-y-1.5">
                         <span className="text-xs font-bold uppercase tracking-wide text-slate-400">{label}</span>
@@ -699,132 +878,6 @@ export default function ScheduleApp() {
                             </div>
                           );
                         })}
-
-                        {gaps.length > 0 && (
-                          <div className="space-y-2">
-                            <p className="text-xs text-amber-600 font-medium">
-                              ⚠️ Falta cobrir {gaps.map((g) => `${fmtMin(g.start)}–${fmtMin(g.end)}`).join(', ')}
-                            </p>
-                            {gaps.map((gap) => {
-                              const flow =
-                                fillFlow && fillFlow.day === dayIdx && fillFlow.shift === label && fillFlow.gapStart === gap.start ? fillFlow : null;
-
-                              if (!flow) {
-                                return (
-                                  <button
-                                    key={gap.start}
-                                    type="button"
-                                    onClick={() =>
-                                      setFillFlow({ day: dayIdx, shift: label, gapStart: gap.start, gapEnd: gap.end, phase: 'who', who: '', start: gap.start, end: gap.end })
-                                    }
-                                    className="text-xs font-semibold bg-amber-50 border border-amber-200 text-amber-700 px-2.5 py-1 rounded-full active:bg-amber-100"
-                                  >
-                                    Cobrir {fmtMin(gap.start)}–{fmtMin(gap.end)}
-                                  </button>
-                                );
-                              }
-
-                              if (flow.phase === 'who') {
-                                return (
-                                  <div key={gap.start} className="flex flex-wrap gap-1.5">
-                                    <span className="text-[11px] text-slate-400 w-full">Quem vai cobrir {fmtMin(gap.start)}–{fmtMin(gap.end)}?</span>
-                                    {companions.map((n) => (
-                                      <button
-                                        key={n}
-                                        type="button"
-                                        onClick={() => setFillFlow({ ...flow, who: n, phase: 'start' })}
-                                        className="text-xs bg-indigo-50 text-indigo-700 px-2.5 py-1 rounded-full active:bg-indigo-200"
-                                      >
-                                        {n}
-                                      </button>
-                                    ))}
-                                    <button type="button" onClick={() => setFillFlow(null)} className="text-[11px] text-rose-500 underline ml-1">
-                                      cancelar
-                                    </button>
-                                  </div>
-                                );
-                              }
-
-                              const allStops = exactHoursOnly ? dayWideStops(dayIdx) : gapStops({ start: flow.gapStart, end: flow.gapEnd });
-                              const stops = flow.phase === 'start' ? allStops.slice(0, -1) : allStops.filter((s) => s > flow.start);
-                              const pick = (picked: number) =>
-                                flow.phase === 'start'
-                                  ? setFillFlow({ ...flow, phase: 'end', start: picked, end: picked })
-                                  : addGapEntry(dayIdx, label, flow.who, flow.start, picked);
-                              return (
-                                <div key={gap.start} className="bg-slate-50 rounded-lg px-2 py-1.5 space-y-1.5">
-                                  <span className="font-medium text-slate-800 text-sm">
-                                    {flow.who} <span className="text-[11px] text-slate-400 font-normal">{flow.phase === 'start' ? 'início' : 'fim'}</span>
-                                  </span>
-                                  <div className="flex flex-wrap items-start gap-2">
-                                    <TimePickRow
-                                      color={flow.phase === 'start' ? 'indigo' : 'sky'}
-                                      stops={stops}
-                                      value={flow.phase === 'start' ? flow.start : flow.end}
-                                      onChange={(v) => setFillFlow({ ...flow, [flow.phase]: v })}
-                                      onPick={pick}
-                                      exactHoursOnly={exactHoursOnly}
-                                    />
-                                    {!exactHoursOnly && (
-                                      <button
-                                        type="button"
-                                        disabled={flow.phase === 'end' && flow.end <= flow.start}
-                                        onClick={() =>
-                                          flow.phase === 'start'
-                                            ? setFillFlow({ ...flow, phase: 'end', end: flow.start })
-                                            : addGapEntry(dayIdx, label, flow.who, flow.start, flow.end)
-                                        }
-                                        className="text-sm font-bold bg-emerald-600 border border-emerald-600 text-white px-4 py-2 rounded-full active:bg-emerald-700 disabled:opacity-40"
-                                      >
-                                        {flow.phase === 'start' ? 'seguir →' : 'OK ✓'}
-                                      </button>
-                                    )}
-                                    <button type="button" onClick={() => setFillFlow(null)} className="text-[11px] text-rose-500 underline">
-                                      cancelar
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        )}
-
-                        {dayIdx === 0 &&
-                          label === 'Manhã' &&
-                          !prevSundayNoite?.length &&
-                          (() => {
-                            const openGap = gaps.find((g) => g.start === 0);
-                            if (!openGap) return null;
-                            if (coverPrevFlow) {
-                              return (
-                                <div className="flex flex-wrap gap-1.5">
-                                  <span className="text-[11px] text-slate-400 w-full">Quem já cobria desde domingo (semana anterior)?</span>
-                                  {companions.map((n) => (
-                                    <button
-                                      key={n}
-                                      type="button"
-                                      onClick={() => coverFromPrevWeek(n, coverPrevFlow.gapEnd)}
-                                      className="text-xs bg-violet-50 text-violet-700 px-2.5 py-1 rounded-full active:bg-violet-200"
-                                    >
-                                      {n}
-                                    </button>
-                                  ))}
-                                  <button type="button" onClick={() => setCoverPrevFlow(null)} className="text-[11px] text-rose-500 underline ml-1">
-                                    cancelar
-                                  </button>
-                                </div>
-                              );
-                            }
-                            return (
-                              <button
-                                type="button"
-                                onClick={() => setCoverPrevFlow({ gapEnd: openGap.end })}
-                                className="text-xs font-semibold bg-violet-50 border border-violet-200 text-violet-700 px-2.5 py-1 rounded-full active:bg-violet-100"
-                              >
-                                🌙 Já coberto desde domingo
-                              </button>
-                            );
-                          })()}
                       </div>
                     );
                   })}
@@ -836,12 +889,18 @@ export default function ScheduleApp() {
 
         {!loading && week && (
           <>
-            <div className="flex items-center justify-center gap-2 pt-2">
+            <div className="flex items-center justify-center gap-2 pt-2 flex-wrap">
               <button
-                onClick={() => setSettingsHubOpen(true)}
+                onClick={() => setSettingsOpen(true)}
                 className="flex items-center gap-1.5 text-xs font-medium text-slate-500 bg-white border border-slate-200 rounded-full px-3 py-2 active:bg-slate-100"
               >
-                <GearIcon /> Configurações
+                👥 Acompanhantes
+              </button>
+              <button
+                onClick={openPayments}
+                className="flex items-center gap-1.5 text-xs font-medium text-slate-500 bg-white border border-slate-200 rounded-full px-3 py-2 active:bg-slate-100"
+              >
+                💰 Pagamentos
               </button>
               <button
                 onClick={toggleExactHoursOnly}
@@ -884,53 +943,102 @@ export default function ScheduleApp() {
         </div>
       )}
 
-      {settingsHubOpen && (
-        <div className="fixed inset-0 bg-black/40 z-30 flex items-end justify-center" onClick={() => setSettingsHubOpen(false)}>
-          <div className="bg-white rounded-t-2xl w-full max-w-md p-4 pb-6" onClick={(e) => e.stopPropagation()}>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="font-bold text-slate-800">⚙️ Configurações</h2>
-              <button onClick={() => setSettingsHubOpen(false)} className="text-slate-400 text-xl leading-none px-1">✕</button>
-            </div>
-            <div className="space-y-2">
-              <button
-                onClick={() => {
-                  setSettingsHubOpen(false);
-                  setSettingsOpen(true);
-                }}
-                className="w-full text-left bg-slate-50 hover:bg-slate-100 rounded-xl px-4 py-3 font-medium text-slate-700 flex items-center gap-2"
-              >
-                👥 Acompanhantes
-              </button>
-              <button
-                onClick={openPayments}
-                className="w-full text-left bg-slate-50 hover:bg-slate-100 rounded-xl px-4 py-3 font-medium text-slate-700 flex items-center gap-2"
-              >
-                💰 Pagamentos
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {settingsOpen && (
-        <div className="fixed inset-0 bg-black/40 z-30 flex items-end justify-center" onClick={() => setSettingsOpen(false)}>
+        <div
+          className="fixed inset-0 bg-black/40 z-30 flex items-end justify-center"
+          onClick={() => {
+            setSettingsOpen(false);
+            setCompanionsEditMode(false);
+            setCompanionsDeleteMode(false);
+            setEditingCompanion(null);
+          }}
+        >
           <div
             className="bg-white rounded-t-2xl w-full max-w-md p-4 pb-6 max-h-[80vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-bold text-slate-800">👥 Acompanhantes sugeridos</h2>
-              <button onClick={() => setSettingsOpen(false)} className="text-slate-400 text-xl leading-none px-1">✕</button>
+              <button
+                onClick={() => {
+                  setSettingsOpen(false);
+                  setCompanionsEditMode(false);
+                  setCompanionsDeleteMode(false);
+                  setEditingCompanion(null);
+                }}
+                className="text-slate-400 text-xl leading-none px-1"
+              >
+                ✕
+              </button>
             </div>
             <p className="text-xs text-slate-400 mb-3">Quem aparece como sugestão rápida ao preencher um horário.</p>
 
+            <div className="flex gap-2 mb-3">
+              <button
+                onClick={() => {
+                  setCompanionsEditMode((v) => !v);
+                  setCompanionsDeleteMode(false);
+                  setEditingCompanion(null);
+                }}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-full border ${
+                  companionsEditMode ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-200 text-slate-500'
+                }`}
+              >
+                ✏️ Editar
+              </button>
+              <button
+                onClick={() => {
+                  setCompanionsDeleteMode((v) => !v);
+                  setCompanionsEditMode(false);
+                  setEditingCompanion(null);
+                }}
+                className={`text-xs font-semibold px-3 py-1.5 rounded-full border ${
+                  companionsDeleteMode ? 'bg-rose-600 border-rose-600 text-white' : 'bg-white border-slate-200 text-slate-500'
+                }`}
+              >
+                🗑️ Excluir
+              </button>
+            </div>
+
             <div className="flex flex-wrap gap-1.5 mb-3">
-              {companions.map((n) => (
-                <span key={n} className="text-xs bg-slate-100 text-slate-700 px-2.5 py-1 rounded-full flex items-center gap-1">
-                  {n}
-                  <button onClick={() => removeCompanion(n)} className="text-slate-400 active:text-rose-500">✕</button>
-                </span>
-              ))}
+              {companions.map((n) =>
+                editingCompanion?.name === n ? (
+                  <span key={n} className="flex items-center gap-1">
+                    <input
+                      autoFocus
+                      value={editingCompanion.draft}
+                      onChange={(e) => setEditingCompanion({ name: n, draft: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') renameCompanion(n, editingCompanion.draft);
+                        if (e.key === 'Escape') setEditingCompanion(null);
+                      }}
+                      className="text-xs border border-indigo-300 rounded-full px-2.5 py-1 outline-none w-28"
+                    />
+                    <button onClick={() => renameCompanion(n, editingCompanion.draft)} className="text-emerald-600 active:opacity-70">✓</button>
+                    <button onClick={() => setEditingCompanion(null)} className="text-slate-400 active:opacity-70">✕</button>
+                  </span>
+                ) : (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => {
+                      if (companionsEditMode) setEditingCompanion({ name: n, draft: n });
+                      else if (companionsDeleteMode) {
+                        if (confirm(`Remover "${n}" da lista de sugestões?`)) removeCompanion(n);
+                      }
+                    }}
+                    className={`text-xs px-2.5 py-1 rounded-full border ${
+                      companionsDeleteMode
+                        ? 'bg-rose-50 border-rose-200 text-rose-700 active:bg-rose-100'
+                        : companionsEditMode
+                          ? 'bg-indigo-50 border-indigo-200 text-indigo-700 active:bg-indigo-100'
+                          : 'bg-slate-100 border-slate-100 text-slate-700'
+                    }`}
+                  >
+                    {n}
+                  </button>
+                ),
+              )}
               {companions.length === 0 && <p className="text-xs text-slate-400 italic">Nenhum nome cadastrado</p>}
             </div>
 
@@ -974,7 +1082,17 @@ export default function ScheduleApp() {
               />
             </div>
 
-            <p className="text-xs text-slate-400 mb-2">Quem entra no cálculo:</p>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs text-slate-400">Quem entra no cálculo:</p>
+              {namesWorkingThisWeek().length > 0 && (
+                <button
+                  onClick={() => toggleAllPayNames(namesWorkingThisWeek())}
+                  className="text-[11px] font-semibold text-indigo-600 active:opacity-70"
+                >
+                  {namesWorkingThisWeek().every((n) => selectedPayNames.has(n)) ? 'Desmarcar todos' : 'Marcar todos'}
+                </button>
+              )}
+            </div>
             <div className="flex flex-wrap gap-1.5 mb-4">
               {namesWorkingThisWeek().map((n) => (
                 <button
@@ -992,17 +1110,33 @@ export default function ScheduleApp() {
               {namesWorkingThisWeek().length === 0 && <p className="text-xs text-slate-400 italic">Nenhum acompanhante na semana</p>}
             </div>
 
+            {paymentResults.length > 0 && (
+              <button
+                onClick={() => toggleExpandAllPay(paymentResults.map((p) => p.who))}
+                className="text-[11px] font-semibold text-indigo-600 active:opacity-70 mb-2"
+              >
+                {paymentResults.every((p) => expandedPayNames.has(p.who)) ? '▾ Recolher todos' : '▸ Expandir todos'}
+              </button>
+            )}
+
             <div className="space-y-1.5">
               {paymentResults.length === 0 ? (
                 <p className="text-xs text-slate-400 italic">Selecione ao menos um acompanhante.</p>
               ) : (
                 paymentResults.map((p) => {
-                  const expanded = expandedPayName === p.who;
+                  const expanded = expandedPayNames.has(p.who);
                   return (
                     <div key={p.who} className="bg-slate-50 rounded-lg overflow-hidden">
                       <button
                         type="button"
-                        onClick={() => setExpandedPayName(expanded ? null : p.who)}
+                        onClick={() =>
+                          setExpandedPayNames((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(p.who)) next.delete(p.who);
+                            else next.add(p.who);
+                            return next;
+                          })
+                        }
                         className="w-full flex items-center justify-between px-3 py-2 text-left active:bg-slate-100"
                       >
                         <div>
