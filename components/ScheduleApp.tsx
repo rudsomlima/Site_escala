@@ -200,6 +200,7 @@ export default function ScheduleApp() {
     start: number;
     end: number;
   } | null>(null);
+  const [coverPrevFlow, setCoverPrevFlow] = useState<{ gapEnd: number } | null>(null);
   const [toast, setToast] = useState('');
   const [companions, setCompanions] = useState<string[]>(FREQUENT_NAMES);
   const [settingsHubOpen, setSettingsHubOpen] = useState(false);
@@ -306,6 +307,33 @@ export default function ScheduleApp() {
     });
     setFillFlow(null);
     return id;
+  }
+
+  // Monday's Manhã gap calc leans on the previous week's Sunday Noite entries to know
+  // whether the small hours are already covered by an overnight shift that started the
+  // week before (see overnightFromPrev in lib/schedule.ts). When that previous week has no
+  // Noite data at all (never filled in, or this is the first week ever tracked), the gap
+  // shows up as missing even though it may genuinely already be covered by an unrecorded
+  // shift — this writes a same-default entry into last week's Sunday Noite so the data
+  // actually reflects that, instead of just hiding the warning.
+  function coverFromPrevWeek(who: string, gapEnd: number) {
+    // A previous-week Noite entry can only ever be credited up to its own window's end
+    // (08:00 — see SHIFT_WINDOWS/clipToWindow in lib/schedule.ts), no matter what end time
+    // is stored here — anything beyond that needs a real Manhã entry instead.
+    const cappedEnd = Math.min(gapEnd, 8 * 60);
+    const prevKey = isoDate(addDays(parseIso(weekKey), -7));
+    const base = prevWeek ?? emptyWeek(prevKey);
+    const nextPrevWeek: Week = JSON.parse(JSON.stringify(base));
+    nextPrevWeek.days[6].shifts['Noite'].push({ id: newId(), who, start: '20:00', end: fmtMin(cappedEnd) });
+    setPrevWeek(nextPrevWeek);
+    fetch(`/api/weeks/${prevKey}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nextPrevWeek),
+    })
+      .then(() => showToast('Salvo ✓'))
+      .catch(() => showToast('Erro ao salvar — verifique a conexão'));
+    setCoverPrevFlow(null);
   }
 
   // entryIds: every id folded into this displayed row by mergeContiguous — the first is
@@ -417,6 +445,7 @@ export default function ScheduleApp() {
     setWhoPicker(null);
     setEditFlow(null);
     setFillFlow(null);
+    setCoverPrevFlow(null);
   }
 
   function addCompanion() {
@@ -489,6 +518,23 @@ export default function ScheduleApp() {
   const monday = parseIso(weekKey);
   const isCurrentWeek = weekKey === isoDate(mondayOf(new Date()));
   const prevSundayNoite = prevWeek?.days[6]?.shifts['Noite'];
+
+  // In "hora fechada" mode the +/- stepper is hidden, so hour badges are the only way to
+  // pick a time — bounding them to just the gap that was tapped would make it impossible to
+  // reach into an adjacent shift (e.g. extend a Manhã entry into Tarde/Noite, which
+  // applySpillover supports). This unions every shift's uncovered hours for the day instead,
+  // so any free hour is reachable regardless of which gap's "Cobrir" button was tapped.
+  function dayWideStops(dayIdx: number, excludeEntryIds?: string[]): number[] {
+    if (!week) return [];
+    const stops = new Set<number>();
+    for (const l of SHIFT_LABELS) {
+      for (const g of gapsForDayShift(week.days, dayIdx, l, prevSundayNoite, excludeEntryIds)) {
+        for (const s of gapStops(g)) stops.add(s);
+      }
+    }
+    return Array.from(stops).sort((a, b) => a - b);
+  }
+
   const effectiveShiftRate = week?.shiftRate ?? shiftRate;
   const paymentResults: PaymentSummary[] = week
     ? weekPayments(week, effectiveShiftRate).filter((p) => selectedPayNames.has(p.who))
@@ -611,7 +657,7 @@ export default function ScheduleApp() {
 
                               {isEditingTime && (() => {
                                 const bounds = freedGapBounds(dayIdx, label, entry, entry.mergedIds);
-                                const allStops = gapStops(bounds);
+                                const allStops = exactHoursOnly ? dayWideStops(dayIdx, entry.mergedIds) : gapStops(bounds);
                                 const stops = editFlow.phase === 'start' ? allStops.slice(0, -1) : allStops.filter((s) => s > editFlow.start);
                                 const pick = (picked: number) =>
                                   editFlow.phase === 'start'
@@ -699,7 +745,7 @@ export default function ScheduleApp() {
                                 );
                               }
 
-                              const allStops = gapStops({ start: flow.gapStart, end: flow.gapEnd });
+                              const allStops = exactHoursOnly ? dayWideStops(dayIdx) : gapStops({ start: flow.gapStart, end: flow.gapEnd });
                               const stops = flow.phase === 'start' ? allStops.slice(0, -1) : allStops.filter((s) => s > flow.start);
                               const pick = (picked: number) =>
                                 flow.phase === 'start'
@@ -742,6 +788,43 @@ export default function ScheduleApp() {
                             })}
                           </div>
                         )}
+
+                        {dayIdx === 0 &&
+                          label === 'Manhã' &&
+                          !prevSundayNoite?.length &&
+                          (() => {
+                            const openGap = gaps.find((g) => g.start === 0);
+                            if (!openGap) return null;
+                            if (coverPrevFlow) {
+                              return (
+                                <div className="flex flex-wrap gap-1.5">
+                                  <span className="text-[11px] text-slate-400 w-full">Quem já cobria desde domingo (semana anterior)?</span>
+                                  {companions.map((n) => (
+                                    <button
+                                      key={n}
+                                      type="button"
+                                      onClick={() => coverFromPrevWeek(n, coverPrevFlow.gapEnd)}
+                                      className="text-xs bg-violet-50 text-violet-700 px-2.5 py-1 rounded-full active:bg-violet-200"
+                                    >
+                                      {n}
+                                    </button>
+                                  ))}
+                                  <button type="button" onClick={() => setCoverPrevFlow(null)} className="text-[11px] text-rose-500 underline ml-1">
+                                    cancelar
+                                  </button>
+                                </div>
+                              );
+                            }
+                            return (
+                              <button
+                                type="button"
+                                onClick={() => setCoverPrevFlow({ gapEnd: openGap.end })}
+                                className="text-xs font-semibold bg-violet-50 border border-violet-200 text-violet-700 px-2.5 py-1 rounded-full active:bg-violet-100"
+                              >
+                                🌙 Já coberto desde domingo
+                              </button>
+                            );
+                          })()}
                       </div>
                     );
                   })}
