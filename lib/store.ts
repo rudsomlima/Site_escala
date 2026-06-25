@@ -116,5 +116,28 @@ export async function setCompanions(names: string[]): Promise<void> {
   else await writeFileStore(store);
 }
 
+const SHIFT_RATE_KEY = 'settings:shiftRate';
+
+export async function getShiftRate(): Promise<number | null> {
+  if (hasKV) {
+    const r = await redis();
+    return ((await r.get(SHIFT_RATE_KEY)) as number) ?? null;
+  }
+  const store = hasBlob ? await readBlobStore() : await readFileStore();
+  return store[SHIFT_RATE_KEY] ?? null;
+}
+
+export async function setShiftRate(rate: number): Promise<void> {
+  if (hasKV) {
+    const r = await redis();
+    await r.set(SHIFT_RATE_KEY, rate);
+    return;
+  }
+  const store = hasBlob ? await readBlobStore() : await readFileStore();
+  store[SHIFT_RATE_KEY] = rate;
+  if (hasBlob) await writeBlobStore(store);
+  else await writeFileStore(store);
+}
+
 export const isUsingKV = hasKV;
 export const isUsingBlob = hasBlob;

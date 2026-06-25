@@ -4,7 +4,11 @@
 export type Entry = { id: string; who: string; start: string; end: string; spilloverOf?: string };
 export type ShiftLabel = 'Manhã' | 'Tarde' | 'Noite';
 export type Day = { shifts: Record<ShiftLabel, Entry[]> };
-export type Week = { weekStart: string; days: Day[] };
+// shiftRate: this week's own R$/12h payment rate, snapshotted the first time it's edited
+// from inside the Payments modal. Weeks without it fall back to the global default
+// (settings:shiftRate) so changing the default only affects weeks that haven't been
+// individually edited yet — already-pinned weeks keep their historical value.
+export type Week = { weekStart: string; days: Day[]; shiftRate?: number };
 
 export const SHIFT_LABELS: ShiftLabel[] = ['Manhã', 'Tarde', 'Noite'];
 export const DAY_NAMES = ['SEGUNDA', 'TERÇA', 'QUARTA', 'QUINTA', 'SEXTA', 'SÁBADO', 'DOMINGO'];
@@ -71,7 +75,8 @@ export function fmtMin(min: number): string {
   return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
 
-const DAY_MIN = 24 * 60;
+export const DAY_MIN = 24 * 60;
+export const DEFAULT_SHIFT_RATE = 110;
 
 // Clips a clock-time entry [s0, e0) to a shift window, trying it both as given and — for
 // windows that extend past midnight, like Noite — as if its clock times were "after
@@ -194,6 +199,51 @@ export function applySpillover(day: Day, originId: string, originLabel: ShiftLab
   }
 }
 
+export type PaymentBlock = { dayIdx: number; date: string; start: string; end: string; hours: number; amount: number };
+export type PaymentSummary = { who: string; hours: number; shifts: number; amount: number; blocks: PaymentBlock[] };
+
+// Hours, duty-block ("plantão") count, and amount owed per person for the week, at
+// `shiftRate` reais per 12h worked. Only counts each person's own entries — spillover rows
+// (spilloverOf set) are just a visual echo of time already counted in the origin entry, so
+// including them would double-count hours. mergeContiguous is reused across the whole day
+// (not per shift) so a duty that crosses shift boundaries (e.g. Manhã into Tarde) is one
+// plantão, not two — same logic applySpillover relies on, just without writing anything.
+// Cross-day duties (e.g. a Noite shift spilling into the next day) aren't merged across
+// days; each day's entries are counted independently, matching applySpillover's same-day-only scope.
+export function weekPayments(week: Week, shiftRate: number): PaymentSummary[] {
+  const monday = parseIso(week.weekStart);
+  const totals = new Map<string, { minutes: number; blocks: PaymentBlock[] }>();
+  week.days.forEach((day, dayIdx) => {
+    const dayEntries = SHIFT_LABELS.flatMap((l) => day.shifts[l]).filter((e) => !e.spilloverOf);
+    for (const block of mergeContiguous(dayEntries)) {
+      if (!block.who || !block.start || !block.end) continue;
+      const s = toMin(block.start);
+      const e = toMin(block.end);
+      const minutes = e <= s ? e + DAY_MIN - s : e - s;
+      const cur = totals.get(block.who) ?? { minutes: 0, blocks: [] };
+      cur.minutes += minutes;
+      cur.blocks.push({
+        dayIdx,
+        date: fmtBR(addDays(monday, dayIdx)),
+        start: block.start,
+        end: block.end,
+        hours: minutes / 60,
+        amount: (minutes / 60 / 12) * shiftRate,
+      });
+      totals.set(block.who, cur);
+    }
+  });
+  return Array.from(totals.entries())
+    .map(([who, { minutes, blocks }]) => ({
+      who,
+      hours: minutes / 60,
+      shifts: blocks.length,
+      amount: (minutes / 60 / 12) * shiftRate,
+      blocks,
+    }))
+    .sort((a, b) => a.who.localeCompare(b.who));
+}
+
 // prevWeekSundayNoite: the previous week's Sunday Noite entries, used so Monday's Manhã
 // gap calc also considers a shift that started the week before.
 // excludeEntryIds: drop these entries from the calculation — used when editing an entry's
@@ -206,9 +256,22 @@ export function gapsForDayShift(
   prevWeekSundayNoite?: Entry[],
   excludeEntryIds?: string[],
 ): Gap[] {
-  const entries = days[dayIdx].shifts[label].filter((e) => !excludeEntryIds?.includes(e.id));
+  // Pull in every shift's entries for the day, not just this one's own array — an entry
+  // stored under Manhã/Tarde that runs into the next shift's window should count as
+  // coverage there even if its visual spillover row (applySpillover) is missing or stale
+  // (e.g. legacy data from before that feature existed). clipToWindow already drops
+  // entries that don't actually overlap the target window, so this is safe — entries
+  // already tagged spilloverOf are excluded here since their origin is already considered.
+  const day = days[dayIdx];
+  const entries = SHIFT_LABELS.flatMap((l) => day.shifts[l]).filter(
+    (e) => !e.spilloverOf && !excludeEntryIds?.includes(e.id),
+  );
   const overnightFromPrev =
-    label === 'Manhã' ? (dayIdx > 0 ? days[dayIdx - 1].shifts['Noite'] : prevWeekSundayNoite) : undefined;
+    label === 'Manhã'
+      ? dayIdx > 0
+        ? days[dayIdx - 1].shifts['Noite'].filter((e) => !e.spilloverOf)
+        : prevWeekSundayNoite
+      : undefined;
   return findGaps(entries, label, overnightFromPrev);
 }
 

@@ -3,9 +3,11 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   Day,
+  DEFAULT_SHIFT_RATE,
   Entry,
   FREQUENT_NAMES,
   Gap,
+  PaymentSummary,
   SHIFT_LABELS,
   ShiftLabel,
   Week,
@@ -22,6 +24,7 @@ import {
   mondayOf,
   parseIso,
   toMin,
+  weekPayments,
   weekToWhatsApp,
   DAY_NAMES,
 } from '@/lib/schedule';
@@ -53,6 +56,31 @@ function renderWhatsAppPreview(text: string) {
 
 function todayIso() {
   return isoDate(new Date());
+}
+
+// Standard Android/Material "settings" gear glyph.
+function GearIcon({ className }: { className?: string }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" className={className}>
+      <path d="M19.14,12.94c0.04,-0.3,0.06,-0.61,0.06,-0.94c0,-0.32,-0.02,-0.64,-0.07,-0.94l2.03,-1.58c0.18,-0.14,0.23,-0.41,0.12,-0.61l-1.92,-3.32c-0.12,-0.22,-0.37,-0.29,-0.59,-0.22l-2.39,0.96c-0.5,-0.38,-1.03,-0.7,-1.62,-0.94L14.4,2.81c-0.04,-0.24,-0.24,-0.41,-0.48,-0.41h-3.84c-0.24,0,-0.43,0.17,-0.47,0.41L9.25,5.35c-0.59,0.24,-1.13,0.57,-1.62,0.94l-2.39,-0.96c-0.22,-0.08,-0.47,0,-0.59,0.22L2.74,8.87c-0.12,0.21,-0.08,0.47,0.12,0.61l2.03,1.58c-0.05,0.3,-0.09,0.63,-0.09,0.94s0.02,0.64,0.07,0.94l-2.03,1.58c-0.18,0.14,-0.23,0.41,-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39,-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44,-0.17,0.47,-0.41l0.36,-2.54c0.59,-0.24,1.13,-0.56,1.62,-0.94l2.39,0.96c0.22,0.08,0.47,0,0.59,-0.22l1.92,-3.32c0.12,-0.22,0.07,-0.47,-0.12,-0.61L19.14,12.94z M12,15.6c-1.98,0,-3.6,-1.62,-3.6,-3.6s1.62,-3.6,3.6,-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z" />
+    </svg>
+  );
+}
+
+// Hands at a clean vertical line (12 o'clock-ish) for "hora fechada" (whole-hour only) vs
+// hands splayed at an angle for "hora fracionada" (free 10min increments allowed) — meant
+// to read at a glance which time-picking mode is active.
+function ClockModeIcon({ exact, className }: { exact: boolean; className?: string }) {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" className={className}>
+      <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="2" />
+      {exact ? (
+        <path d="M12 12V7M12 12H16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      ) : (
+        <path d="M12 12L9 8M12 12L16 14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      )}
+    </svg>
+  );
 }
 
 const HOLD_ACCELERATE_AFTER_MS = 2000;
@@ -119,7 +147,21 @@ function StepperBadge({ value, onChange, color }: { value: number; onChange: (ne
 // Hour-aligned quick-pick badges (e.g. 18:00, 19:00, 20:00…) plus the +/-10min stepper
 // right below — tap a badge to jump straight to that hour, or nudge with +/- for anything
 // in between. The stepper stays visible at all times, it's just an optional refinement.
-function TimePickRow({ value, stops, color, onChange }: { value: number; stops: number[]; color: 'indigo' | 'sky'; onChange: (next: number) => void }) {
+function TimePickRow({
+  value,
+  stops,
+  color,
+  onChange,
+  onPick,
+  exactHoursOnly,
+}: {
+  value: number;
+  stops: number[];
+  color: 'indigo' | 'sky';
+  onChange: (next: number) => void;
+  onPick?: (picked: number) => void;
+  exactHoursOnly?: boolean;
+}) {
   const idleClass = color === 'indigo' ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-sky-50 border-sky-200 text-sky-700';
   const activeClass = color === 'indigo' ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-sky-600 border-sky-600 text-white';
   return (
@@ -129,14 +171,14 @@ function TimePickRow({ value, stops, color, onChange }: { value: number; stops: 
           <button
             key={s}
             type="button"
-            onClick={() => onChange(s)}
+            onClick={() => (exactHoursOnly ? onPick?.(s) : onChange(s))}
             className={`text-xs font-semibold border px-2.5 py-1 rounded-full active:opacity-80 ${s === value ? activeClass : idleClass}`}
           >
             {fmtMin(s)}
           </button>
         ))}
       </div>
-      <StepperBadge value={value} onChange={onChange} color={color} />
+      {!exactHoursOnly && <StepperBadge value={value} onChange={onChange} color={color} />}
     </div>
   );
 }
@@ -160,17 +202,40 @@ export default function ScheduleApp() {
   } | null>(null);
   const [toast, setToast] = useState('');
   const [companions, setCompanions] = useState<string[]>(FREQUENT_NAMES);
+  const [settingsHubOpen, setSettingsHubOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [paymentsOpen, setPaymentsOpen] = useState(false);
+  const [shiftRate, setShiftRate] = useState(DEFAULT_SHIFT_RATE);
+  const [selectedPayNames, setSelectedPayNames] = useState<Set<string>>(new Set());
+  const [expandedPayName, setExpandedPayName] = useState<string | null>(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [summaryEditing, setSummaryEditing] = useState(false);
+  const [summaryDraft, setSummaryDraft] = useState('');
   const [newCompanion, setNewCompanion] = useState('');
+  const [exactHoursOnly, setExactHoursOnly] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const companionsSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    setExactHoursOnly(localStorage.getItem('exactHoursOnly') === '1');
+  }, []);
+
+  function toggleExactHoursOnly() {
+    setExactHoursOnly((prev) => {
+      const next = !prev;
+      localStorage.setItem('exactHoursOnly', next ? '1' : '0');
+      return next;
+    });
+  }
+
+  useEffect(() => {
     fetch('/api/settings')
       .then((r) => r.json())
-      .then((d: { names: string[] }) => setCompanions(d.names));
+      .then((d: { names: string[]; shiftRate: number }) => {
+        setCompanions(d.names);
+        setShiftRate(d.shiftRate ?? DEFAULT_SHIFT_RATE);
+      });
   }, []);
 
   useEffect(() => {
@@ -187,7 +252,11 @@ export default function ScheduleApp() {
       .catch(() => setPrevWeek(null));
   }, [weekKey]);
 
-  function scheduleSave(next: Week) {
+  // onSaved: runs only once this week's PUT actually resolves — used to chain a write to a
+  // different store key (e.g. the global settings) strictly after this one, since the
+  // JSON-document store (lib/store.ts) does a whole-document read-modify-write per request,
+  // so firing two writes concurrently risks one clobbering the other (lost update).
+  function scheduleSave(next: Week, onSaved?: () => void) {
     setWeek(next);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
@@ -196,7 +265,10 @@ export default function ScheduleApp() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(next),
       })
-        .then(() => showToast('Salvo ✓'))
+        .then(() => {
+          showToast('Salvo ✓');
+          onSaved?.();
+        })
         .catch(() => showToast('Erro ao salvar — verifique a conexão'));
     }, 400);
   }
@@ -326,6 +398,12 @@ export default function ScheduleApp() {
     if (text) copyText(text);
   }
 
+  function openSummary() {
+    setSummaryDraft(whatsAppText() ?? '');
+    setSummaryEditing(false);
+    setSummaryOpen(true);
+  }
+
   function deleteWeek() {
     if (!week) return;
     if (!confirm('Apagar toda a escala desta semana? Essa ação não pode ser desfeita.')) return;
@@ -352,31 +430,74 @@ export default function ScheduleApp() {
     saveCompanions(companions.filter((n) => n !== name));
   }
 
+  // Names actually scheduled this week (own entries only, not visual spillover rows) —
+  // falls back to the suggested companions list if the week is still empty.
+  function namesWorkingThisWeek(): string[] {
+    if (!week) return companions;
+    const set = new Set<string>();
+    for (const day of week.days) {
+      for (const label of SHIFT_LABELS) {
+        for (const e of day.shifts[label]) {
+          if (e.who && !e.spilloverOf) set.add(e.who);
+        }
+      }
+    }
+    return set.size > 0 ? Array.from(set).sort() : companions;
+  }
+
+  function openPayments() {
+    setSelectedPayNames(new Set());
+    setExpandedPayName(null);
+    setSettingsHubOpen(false);
+    setPaymentsOpen(true);
+  }
+
+  function togglePayName(name: string) {
+    setSelectedPayNames((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+
+  // The current week's own pinned rate, if it has one, otherwise the live global default —
+  // see Week.shiftRate's doc comment in lib/schedule.ts for why.
+  function saveWeekShiftRate(next: number) {
+    if (!week) return;
+    const nextWeek: Week = { ...week, shiftRate: next };
+    setShiftRate(next);
+    // Update the global default only after this week's own value has actually finished
+    // saving — see scheduleSave's onSaved doc comment for why this can't run concurrently.
+    scheduleSave(nextWeek, () => {
+      fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ shiftRate: next }),
+      }).then(() => showToast('Valor atualizado ✓'));
+    });
+  }
+
+  function fmtHours(h: number): string {
+    return h % 1 === 0 ? `${h}h` : `${h.toFixed(1).replace('.', ',')}h`;
+  }
+
+  function fmtMoney(v: number): string {
+    return `R$ ${v.toFixed(2).replace('.', ',')}`;
+  }
+
   const monday = parseIso(weekKey);
   const isCurrentWeek = weekKey === isoDate(mondayOf(new Date()));
   const prevSundayNoite = prevWeek?.days[6]?.shifts['Noite'];
+  const effectiveShiftRate = week?.shiftRate ?? shiftRate;
+  const paymentResults: PaymentSummary[] = week
+    ? weekPayments(week, effectiveShiftRate).filter((p) => selectedPayNames.has(p.who))
+    : [];
 
   return (
     <div className="min-h-screen pb-24">
-      <header className="bg-indigo-600 text-white px-4 py-4 sticky top-0 z-10 shadow">
-        <div className="flex items-center justify-between">
-          <h1 className="text-lg font-bold leading-tight">🗓️ Escala de Acompanhamento</h1>
-          <button
-            onClick={() => setSettingsOpen(true)}
-            aria-label="Gerenciar acompanhantes"
-            className="p-1 -mr-1 active:opacity-75"
-          >
-            <svg width="26" height="26" viewBox="0 0 24 24" fill="none">
-              <path d="M20 21a8 8 0 0 0-16 0" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-              <circle cx="12" cy="8" r="4" stroke="white" strokeWidth="2" />
-              <path
-                d="M18.5 5.5c-.6-.6-1.5-.6-2.1 0l-.4.4-.4-.4c-.6-.6-1.5-.6-2.1 0-.6.6-.6 1.6 0 2.2l2.5 2.4 2.5-2.4c.6-.6.6-1.6 0-2.2z"
-                fill="#fb7185"
-              />
-            </svg>
-          </button>
-        </div>
-        <div className="flex items-center justify-between mt-2 gap-2">
+      <header className="bg-indigo-600 text-white px-4 py-3 sticky top-0 z-10 shadow">
+        <div className="flex items-center justify-between gap-2">
           <button
             onClick={() => goWeek(-1)}
             aria-label="Semana anterior"
@@ -386,7 +507,7 @@ export default function ScheduleApp() {
           </button>
           <p className="flex-1 text-center text-white text-sm font-medium">
             Semana de {fmtBR(monday)}{' '}
-            {isCurrentWeek && <span className="ml-1 bg-white/25 px-2 py-0.5 rounded-full text-[10px] align-middle font-bold">ATUAL</span>}
+            {isCurrentWeek && <span className="ml-1 bg-rose-500 text-white px-2 py-0.5 rounded-full text-[10px] align-middle font-bold">ATUAL</span>}
           </p>
           <button
             onClick={() => goWeek(1)}
@@ -492,6 +613,10 @@ export default function ScheduleApp() {
                                 const bounds = freedGapBounds(dayIdx, label, entry, entry.mergedIds);
                                 const allStops = gapStops(bounds);
                                 const stops = editFlow.phase === 'start' ? allStops.slice(0, -1) : allStops.filter((s) => s > editFlow.start);
+                                const pick = (picked: number) =>
+                                  editFlow.phase === 'start'
+                                    ? setEditFlow({ ...editFlow, phase: 'end', start: picked, end: picked })
+                                    : confirmEntryTime(dayIdx, label, entry.mergedIds, editFlow.start, picked);
                                 return (
                                   <div className="mt-2 pt-2 border-t border-slate-200 space-y-1.5">
                                     <span className="text-[11px] text-slate-400">{editFlow.phase === 'start' ? 'início' : 'fim'}</span>
@@ -501,19 +626,23 @@ export default function ScheduleApp() {
                                         stops={stops}
                                         value={editFlow.phase === 'start' ? editFlow.start : editFlow.end}
                                         onChange={(v) => setEditFlow({ ...editFlow, [editFlow.phase]: v })}
+                                        onPick={pick}
+                                        exactHoursOnly={exactHoursOnly}
                                       />
-                                      <button
-                                        type="button"
-                                        disabled={editFlow.phase === 'end' && editFlow.end <= editFlow.start}
-                                        onClick={() =>
-                                          editFlow.phase === 'start'
-                                            ? setEditFlow({ ...editFlow, phase: 'end', end: editFlow.start })
-                                            : confirmEntryTime(dayIdx, label, entry.mergedIds, editFlow.start, editFlow.end)
-                                        }
-                                        className="text-sm font-bold bg-emerald-600 border border-emerald-600 text-white px-4 py-2 rounded-full active:bg-emerald-700 disabled:opacity-40"
-                                      >
-                                        {editFlow.phase === 'start' ? 'seguir →' : 'OK ✓'}
-                                      </button>
+                                      {!exactHoursOnly && (
+                                        <button
+                                          type="button"
+                                          disabled={editFlow.phase === 'end' && editFlow.end <= editFlow.start}
+                                          onClick={() =>
+                                            editFlow.phase === 'start'
+                                              ? setEditFlow({ ...editFlow, phase: 'end', end: editFlow.start })
+                                              : confirmEntryTime(dayIdx, label, entry.mergedIds, editFlow.start, editFlow.end)
+                                          }
+                                          className="text-sm font-bold bg-emerald-600 border border-emerald-600 text-white px-4 py-2 rounded-full active:bg-emerald-700 disabled:opacity-40"
+                                        >
+                                          {editFlow.phase === 'start' ? 'seguir →' : 'OK ✓'}
+                                        </button>
+                                      )}
                                       <button type="button" onClick={() => setEditFlow(null)} className="text-[11px] text-rose-500 underline">
                                         cancelar
                                       </button>
@@ -572,6 +701,10 @@ export default function ScheduleApp() {
 
                               const allStops = gapStops({ start: flow.gapStart, end: flow.gapEnd });
                               const stops = flow.phase === 'start' ? allStops.slice(0, -1) : allStops.filter((s) => s > flow.start);
+                              const pick = (picked: number) =>
+                                flow.phase === 'start'
+                                  ? setFillFlow({ ...flow, phase: 'end', start: picked, end: picked })
+                                  : addGapEntry(dayIdx, label, flow.who, flow.start, picked);
                               return (
                                 <div key={gap.start} className="bg-slate-50 rounded-lg px-2 py-1.5 space-y-1.5">
                                   <span className="font-medium text-slate-800 text-sm">
@@ -583,19 +716,23 @@ export default function ScheduleApp() {
                                       stops={stops}
                                       value={flow.phase === 'start' ? flow.start : flow.end}
                                       onChange={(v) => setFillFlow({ ...flow, [flow.phase]: v })}
+                                      onPick={pick}
+                                      exactHoursOnly={exactHoursOnly}
                                     />
-                                    <button
-                                      type="button"
-                                      disabled={flow.phase === 'end' && flow.end <= flow.start}
-                                      onClick={() =>
-                                        flow.phase === 'start'
-                                          ? setFillFlow({ ...flow, phase: 'end', end: flow.start })
-                                          : addGapEntry(dayIdx, label, flow.who, flow.start, flow.end)
-                                      }
-                                      className="text-sm font-bold bg-emerald-600 border border-emerald-600 text-white px-4 py-2 rounded-full active:bg-emerald-700 disabled:opacity-40"
-                                    >
-                                      {flow.phase === 'start' ? 'seguir →' : 'OK ✓'}
-                                    </button>
+                                    {!exactHoursOnly && (
+                                      <button
+                                        type="button"
+                                        disabled={flow.phase === 'end' && flow.end <= flow.start}
+                                        onClick={() =>
+                                          flow.phase === 'start'
+                                            ? setFillFlow({ ...flow, phase: 'end', end: flow.start })
+                                            : addGapEntry(dayIdx, label, flow.who, flow.start, flow.end)
+                                        }
+                                        className="text-sm font-bold bg-emerald-600 border border-emerald-600 text-white px-4 py-2 rounded-full active:bg-emerald-700 disabled:opacity-40"
+                                      >
+                                        {flow.phase === 'start' ? 'seguir →' : 'OK ✓'}
+                                      </button>
+                                    )}
                                     <button type="button" onClick={() => setFillFlow(null)} className="text-[11px] text-rose-500 underline">
                                       cancelar
                                     </button>
@@ -615,18 +752,40 @@ export default function ScheduleApp() {
         )}
 
         {!loading && week && (
-          <button
-            onClick={deleteWeek}
-            className="w-full text-center text-xs text-rose-500 font-medium py-3 active:text-rose-700"
-          >
-            🗑️ Apagar escala desta semana
-          </button>
+          <>
+            <div className="flex items-center justify-center gap-2 pt-2">
+              <button
+                onClick={() => setSettingsHubOpen(true)}
+                className="flex items-center gap-1.5 text-xs font-medium text-slate-500 bg-white border border-slate-200 rounded-full px-3 py-2 active:bg-slate-100"
+              >
+                <GearIcon /> Configurações
+              </button>
+              <button
+                onClick={toggleExactHoursOnly}
+                aria-label="Alternar hora fechada ou fracionada"
+                className={`flex items-center gap-1.5 text-xs font-medium rounded-full px-3 py-2 border ${
+                  exactHoursOnly
+                    ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                    : 'bg-white border-slate-200 text-slate-500'
+                }`}
+              >
+                <ClockModeIcon exact={exactHoursOnly} /> {exactHoursOnly ? 'Hora fechada' : 'Hora fracionada'}
+              </button>
+            </div>
+
+            <button
+              onClick={deleteWeek}
+              className="w-full text-center text-xs text-rose-500 font-medium py-3 active:text-rose-700"
+            >
+              🗑️ Apagar escala desta semana
+            </button>
+          </>
         )}
       </main>
 
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-3 py-3 flex gap-2 max-w-md mx-auto">
         <button
-          onClick={() => setSummaryOpen(true)}
+          onClick={openSummary}
           className="bg-slate-100 text-slate-700 font-semibold rounded-xl py-3 px-4 active:scale-95 transition"
         >
           👁️ Resumo
@@ -639,6 +798,34 @@ export default function ScheduleApp() {
       {toast && (
         <div className="fixed top-3 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2 rounded-full z-20">
           {toast}
+        </div>
+      )}
+
+      {settingsHubOpen && (
+        <div className="fixed inset-0 bg-black/40 z-30 flex items-end justify-center" onClick={() => setSettingsHubOpen(false)}>
+          <div className="bg-white rounded-t-2xl w-full max-w-md p-4 pb-6" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-bold text-slate-800">⚙️ Configurações</h2>
+              <button onClick={() => setSettingsHubOpen(false)} className="text-slate-400 text-xl leading-none px-1">✕</button>
+            </div>
+            <div className="space-y-2">
+              <button
+                onClick={() => {
+                  setSettingsHubOpen(false);
+                  setSettingsOpen(true);
+                }}
+                className="w-full text-left bg-slate-50 hover:bg-slate-100 rounded-xl px-4 py-3 font-medium text-slate-700 flex items-center gap-2"
+              >
+                👥 Acompanhantes
+              </button>
+              <button
+                onClick={openPayments}
+                className="w-full text-left bg-slate-50 hover:bg-slate-100 rounded-xl px-4 py-3 font-medium text-slate-700 flex items-center gap-2"
+              >
+                💰 Pagamentos
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -680,6 +867,99 @@ export default function ScheduleApp() {
         </div>
       )}
 
+      {paymentsOpen && (
+        <div className="fixed inset-0 bg-black/40 z-30 flex items-end justify-center" onClick={() => setPaymentsOpen(false)}>
+          <div
+            className="bg-white rounded-t-2xl w-full max-w-md p-4 pb-6 max-h-[80vh] overflow-y-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-bold text-slate-800">💰 Pagamentos da semana</h2>
+              <button onClick={() => setPaymentsOpen(false)} className="text-slate-400 text-xl leading-none px-1">✕</button>
+            </div>
+
+            <label className="block text-xs text-slate-400 mb-1">Valor por 12h</label>
+            <div className="flex items-center gap-2 mb-4">
+              <span className="text-sm text-slate-500">R$</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                value={effectiveShiftRate}
+                onChange={(e) => saveWeekShiftRate(Number(e.target.value) || 0)}
+                className="w-24 border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:border-indigo-400"
+              />
+            </div>
+
+            <p className="text-xs text-slate-400 mb-2">Quem entra no cálculo:</p>
+            <div className="flex flex-wrap gap-1.5 mb-4">
+              {namesWorkingThisWeek().map((n) => (
+                <button
+                  key={n}
+                  onClick={() => togglePayName(n)}
+                  className={`text-xs px-2.5 py-1 rounded-full border ${
+                    selectedPayNames.has(n)
+                      ? 'bg-indigo-600 border-indigo-600 text-white'
+                      : 'bg-white border-slate-200 text-slate-500'
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+              {namesWorkingThisWeek().length === 0 && <p className="text-xs text-slate-400 italic">Nenhum acompanhante na semana</p>}
+            </div>
+
+            <div className="space-y-1.5">
+              {paymentResults.length === 0 ? (
+                <p className="text-xs text-slate-400 italic">Selecione ao menos um acompanhante.</p>
+              ) : (
+                paymentResults.map((p) => {
+                  const expanded = expandedPayName === p.who;
+                  return (
+                    <div key={p.who} className="bg-slate-50 rounded-lg overflow-hidden">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedPayName(expanded ? null : p.who)}
+                        className="w-full flex items-center justify-between px-3 py-2 text-left active:bg-slate-100"
+                      >
+                        <div>
+                          <p className="font-medium text-slate-800 text-sm">
+                            {p.who} <span className="text-slate-400">{expanded ? '▾' : '▸'}</span>
+                          </p>
+                          <p className="text-[11px] text-slate-400">
+                            {fmtHours(p.hours)} · {p.shifts} {p.shifts === 1 ? 'plantão' : 'plantões'}
+                          </p>
+                        </div>
+                        <p className="font-bold text-emerald-700">{fmtMoney(p.amount)}</p>
+                      </button>
+                      {expanded && (
+                        <div className="px-3 pb-2 space-y-1 border-t border-slate-200 pt-2">
+                          {p.blocks.map((b, i) => (
+                            <div key={i} className="flex items-center justify-between text-xs">
+                              <span className="text-slate-500">
+                                {DAY_NAMES[b.dayIdx]} {b.date} · {b.start}–{b.end} · {fmtHours(b.hours)}
+                              </span>
+                              <span className="font-semibold text-slate-700">{fmtMoney(b.amount)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {paymentResults.length > 0 && (
+              <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-200">
+                <span className="text-sm font-semibold text-slate-600">Total</span>
+                <span className="font-bold text-slate-800">{fmtMoney(paymentResults.reduce((sum, p) => sum + p.amount, 0))}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {summaryOpen && (
         <div className="fixed inset-0 bg-black/40 z-30 flex items-end justify-center" onClick={() => setSummaryOpen(false)}>
           <div
@@ -688,13 +968,27 @@ export default function ScheduleApp() {
           >
             <div className="flex items-center justify-between mb-3 shrink-0">
               <h2 className="font-bold text-slate-800">👁️ Resumo da semana</h2>
-              <button onClick={() => setSummaryOpen(false)} className="text-slate-400 text-xl leading-none px-1">✕</button>
+              <div className="flex items-center gap-3">
+                <button onClick={() => setSummaryEditing((v) => !v)} className="text-xs font-semibold text-indigo-600 active:opacity-70">
+                  {summaryEditing ? '👁️ Visualizar' : '✏️ Editar'}
+                </button>
+                <button onClick={() => setSummaryOpen(false)} className="text-slate-400 text-xl leading-none px-1">✕</button>
+              </div>
             </div>
-            <div className="flex-1 overflow-y-auto text-base leading-relaxed text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3">
-              {renderWhatsAppPreview(whatsAppText() ?? '')}
-            </div>
+            {summaryEditing ? (
+              <textarea
+                value={summaryDraft}
+                onChange={(e) => setSummaryDraft(e.target.value)}
+                className="flex-1 overflow-y-auto text-sm leading-relaxed text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3 outline-none focus:border-indigo-400 resize-none"
+                rows={14}
+              />
+            ) : (
+              <div className="flex-1 overflow-y-auto text-base leading-relaxed text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3">
+                {renderWhatsAppPreview(summaryDraft)}
+              </div>
+            )}
             <button
-              onClick={copyToWhatsApp}
+              onClick={() => copyText(summaryDraft)}
               className="mt-3 shrink-0 bg-emerald-600 text-white font-semibold rounded-xl py-3 active:scale-95 transition"
             >
               📋 Copiar p/ WhatsApp
