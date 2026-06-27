@@ -767,13 +767,35 @@ export default function ScheduleApp() {
                     );
                   })()}
 
-                  {SHIFT_LABELS.map((label) => {
-                    const entries = mergeContiguous(day.shifts[label]);
+                  {(() => {
+                    // Spillover rows (spilloverOf set) are just a visual echo of an entry that
+                    // already shows under its own shift — drop them here so a contiguous duty
+                    // spanning shifts is only shown once, under the shift it actually starts in.
+                    // Exception: a duty starting exactly at 12:00 displays under Tarde instead of
+                    // Manhã (even though 12:00 still falls inside Manhã's window), per how the
+                    // team thinks about the midday boundary. The entry still lives in
+                    // day.shifts['Manhã'] — actualLabel below is what edit/delete handlers use.
+                    const grouped: Record<ShiftLabel, { entry: Entry; actualLabel: ShiftLabel }[]> = {
+                      'Manhã': [], 'Tarde': [], 'Noite': [],
+                    };
+                    for (const actualLabel of SHIFT_LABELS) {
+                      for (const e of day.shifts[actualLabel].filter((e) => !e.spilloverOf)) {
+                        const displayLabel = actualLabel === 'Manhã' && e.start === '12:00' ? 'Tarde' : actualLabel;
+                        grouped[displayLabel].push({ entry: e, actualLabel });
+                      }
+                    }
+                    return SHIFT_LABELS.map((displayLabel) => {
+                    const items = grouped[displayLabel];
+                    const entries = mergeContiguous(items.map((i) => i.entry)).map((merged) => ({
+                      ...merged,
+                      actualLabel: items.find((i) => merged.mergedIds.includes(i.entry.id))!.actualLabel,
+                    }));
                     return (
-                      <div key={label} className="space-y-1.5">
-                        <span className="text-xs font-bold uppercase tracking-wide text-slate-400">{label}</span>
+                      <div key={displayLabel} className="space-y-1.5">
+                        <span className="text-xs font-bold uppercase tracking-wide text-slate-400">{displayLabel}</span>
 
                         {entries.map((entry) => {
+                          const label = entry.actualLabel;
                           const isEditingTime = editFlow && editFlow.day === dayIdx && editFlow.shift === label && editFlow.entryId === entry.id;
                           return (
                             <div key={entry.id} className="bg-slate-50 rounded-lg px-2 py-1.5">
@@ -880,7 +902,8 @@ export default function ScheduleApp() {
                         })}
                       </div>
                     );
-                  })}
+                    });
+                  })()}
                 </div>
               </details>
             );
